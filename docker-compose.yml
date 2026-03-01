@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  golf-scheduler:
+    build: .
+    container_name: golf-scheduler
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./screenshots:/app/screenshots
+    restart: unless-stopped

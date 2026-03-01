@@ -1,0 +1,24 @@
+{
+  "name": "golf-scheduler",
+  "version": "1.0.0",
+  "description": "Automated tee time booking bot for Fort Walton Beach Golf",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js book",
+    "book": "node src/index.js book",
+    "dry-run": "node src/index.js book --dry-run",
+    "status": "node src/index.js status",
+    "scheduler": "node src/index.js scheduler",
+    "init": "node src/index.js init",
+    "web": "node src/index.js web"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "playwright": "^1.49.1",
+    "sql.js": "^1.11.0",
+    "winston": "^3.17.0"
+  }
+}
