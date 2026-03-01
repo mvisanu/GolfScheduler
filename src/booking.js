@@ -292,15 +292,24 @@ class BookingEngine {
         const confirmation = checkoutResult.confirmationNumber || bookResult.confirmationNumber || 'CONFIRMED';
         logger.info(`Slot ${i} (${targetTime}) checkout complete! Confirmation: ${confirmation}`);
 
-        await db.markSuccess(dbSlot.id, {
-          actualTime: targetTime,
-          course: courseName,
-          confirmationNumber: confirmation,
-          screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
-        });
-        bookedCount++;
-        result.booked++;
-        result._bookedSlotIds.add(dbSlot.id);
+        // Verify booking on Reservations page
+        const verification = await this.site.verifyBookingOnSite(date, targetTime);
+        if (verification.verified) {
+          logger.info(`Slot ${i} (${targetTime}) VERIFIED on Reservations page`);
+          await db.markSuccess(dbSlot.id, {
+            actualTime: targetTime,
+            course: courseName,
+            confirmationNumber: confirmation,
+            screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
+          });
+          bookedCount++;
+          result.booked++;
+          result._bookedSlotIds.add(dbSlot.id);
+        } else {
+          logger.warn(`Slot ${i} (${targetTime}) NOT found on Reservations page — marking failed`);
+          await db.markFailed(dbSlot.id, 'Checkout completed but booking not found on Reservations page');
+          result.failed++;
+        }
       } else {
         await db.markFailed(dbSlot.id, bookResult.error);
         result.failed++;

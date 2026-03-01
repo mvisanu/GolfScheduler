@@ -1293,6 +1293,51 @@ class SiteAutomation {
     return reservations;
   }
 
+  /**
+   * Verify that a specific booking exists on the Reservations page.
+   * Called after checkout to confirm the booking actually went through.
+   * @param {string} date - YYYY-MM-DD
+   * @param {string} time - 24h format HH:MM (±15 min tolerance)
+   * @returns {{ verified: boolean, reservations: Array }}
+   */
+  async verifyBookingOnSite(date, time) {
+    logger.info(`Verifying booking on Reservations page: ${date} ${time}...`);
+
+    try {
+      const reservations = await this.getExistingReservations(date);
+
+      if (reservations.length === 0) {
+        logger.warn(`Verification: no reservations found for ${date}`);
+        await this.screenshot('verify-no-reservations');
+        return { verified: false, reservations };
+      }
+
+      // Check if any reservation matches the booked time (±15 min)
+      const bookedMinutes = this._timeToMinutes(time);
+      const match = reservations.find(r => {
+        const resMinutes = this._timeToMinutes(r.time);
+        return Math.abs(resMinutes - bookedMinutes) <= 15;
+      });
+
+      if (match) {
+        logger.info(`Verification SUCCESS: found reservation at ${match.time} (${match.course}) matching booked time ${time}`);
+        return { verified: true, reservations };
+      }
+
+      logger.warn(`Verification FAILED: no reservation near ${time} found on ${date}. Found: ${reservations.map(r => r.time).join(', ')}`);
+      await this.screenshot('verify-mismatch');
+      return { verified: false, reservations };
+    } catch (error) {
+      logger.warn(`Verification error: ${error.message}`);
+      return { verified: false, reservations: [] };
+    }
+  }
+
+  _timeToMinutes(time) {
+    const [h, m] = time.split(':').map(Number);
+    return h * 60 + m;
+  }
+
   async _handleCheckout(slotIndex) {
     logger.info('Handling checkout flow...');
 
