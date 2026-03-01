@@ -124,19 +124,20 @@ module.exports = {
     return queryAll(`SELECT * FROM bookings WHERE date >= date('now') ORDER BY date, target_time, slot_index`);
   },
 
-  async markSuccess(id, { actualTime, confirmationNumber, screenshotPath }) {
+  async markSuccess(id, { actualTime, course, confirmationNumber, screenshotPath }) {
     await getDb();
     run(`
       UPDATE bookings
       SET status = 'confirmed',
           actual_time = $actualTime,
+          course = COALESCE($course, course),
           confirmation_number = $confirmationNumber,
           screenshot_path = $screenshotPath,
           attempts = attempts + 1,
           last_attempt_at = datetime('now'),
           updated_at = datetime('now')
       WHERE id = $id
-    `, { $id: id, $actualTime: actualTime, $confirmationNumber: confirmationNumber, $screenshotPath: screenshotPath });
+    `, { $id: id, $actualTime: actualTime, $course: course || null, $confirmationNumber: confirmationNumber, $screenshotPath: screenshotPath });
     save();
   },
 

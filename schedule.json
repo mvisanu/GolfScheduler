@@ -1,0 +1,30 @@
+[
+  {
+    "day": "Monday",
+    "windowStart": "12:00",
+    "windowEnd": "13:00",
+    "players": 12,
+    "slots": 3
+  },
+  {
+    "day": "Tuesday",
+    "windowStart": "12:00",
+    "windowEnd": "13:00",
+    "players": 8,
+    "slots": 2
+  },
+  {
+    "day": "Friday",
+    "windowStart": "12:00",
+    "windowEnd": "13:00",
+    "players": 12,
+    "slots": 3
+  },
+  {
+    "day": "Saturday",
+    "windowStart": "09:00",
+    "windowEnd": "10:00",
+    "players": 12,
+    "slots": 3
+  }
+]

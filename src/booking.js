@@ -88,65 +88,50 @@ class BookingEngine {
     const { date, dayLabel, slots } = group;
     logger.info(`Processing: ${date} (${dayLabel}) — ${slots.length} slots`);
 
-    const result = { booked: 0, failed: 0, partial: 0 };
-
-    let courseId = config.site.courses.pines.id;
-    await this.site.navigateToBooking(courseId, date);
-    const selectedCourse = await this.site.selectCourse();
-
-    if (selectedCourse === config.site.courses.oaks.id) {
-      courseId = selectedCourse;
-      await this.site.navigateToBooking(courseId, date);
-    }
-
-    await this.site.selectDate(date);
-
-    const teeTimes = await this.site.getAvailableTeeTimes();
-    if (teeTimes.length === 0) {
-      logger.warn(`No tee times available for ${date}`);
-      if (courseId === config.site.courses.pines.id) {
-        logger.info('Trying Oaks course as fallback...');
-        courseId = config.site.courses.oaks.id;
-        await this.site.navigateToBooking(courseId, date);
-        await this.site.selectDate(date);
-        const oaksTimes = await this.site.getAvailableTeeTimes();
-        if (oaksTimes.length === 0) {
-          for (const slot of slots) {
-            await db.markFailed(slot.id, 'No tee times available on either course');
-          }
-          result.failed = slots.length;
-          notify.alertFailure({ date, dayLabel, error: 'No tee times on either course' });
-          return result;
-        }
-        return this._bookSlots(oaksTimes, slots, date, dayLabel, 'Oaks');
-      }
-      for (const slot of slots) {
-        await db.markFailed(slot.id, 'No tee times available');
-      }
-      result.failed = slots.length;
-      return result;
-    }
-
-    return this._bookSlots(teeTimes, slots, date, dayLabel, courseId === config.site.courses.oaks.id ? 'Oaks' : 'Pines');
-  }
-
-  async _bookSlots(teeTimes, slots, date, dayLabel, courseName) {
-    const result = { booked: 0, failed: 0, partial: 0 };
     const windowStart = slots[0].window_start || slots[0].target_time;
     const windowEnd = slots[0].window_end || slots[0].target_time;
     const slotsNeeded = slots.length;
 
-    const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
+    // Try Pines first, then Oaks
+    const coursesToTry = [
+      { id: config.site.courses.pines.id, name: 'Pines' },
+      { id: config.site.courses.oaks.id, name: 'Oaks' },
+    ];
 
-    if (consecutive.length === 0) {
-      logger.warn(`Cannot find ${slotsNeeded} consecutive slots in window ${windowStart}-${windowEnd}`);
-      for (const slot of slots) {
-        await db.markFailed(slot.id, `No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd}`);
+    for (const course of coursesToTry) {
+      logger.info(`Trying ${course.name} course for ${date}...`);
+      await this.site.navigateToBooking(course.id, date);
+      await this.site.selectCourse();
+      await this.site.selectDate(date);
+
+      const teeTimes = await this.site.getAvailableTeeTimes();
+      if (teeTimes.length === 0) {
+        logger.warn(`No tee times on ${course.name} for ${date}`);
+        continue;
       }
-      result.failed = slotsNeeded;
-      notify.alertFailure({ date, dayLabel, error: `No consecutive slots in ${windowStart}-${windowEnd}` });
-      return result;
+
+      const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
+      if (consecutive.length === 0) {
+        logger.warn(`No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on ${course.name}`);
+        continue;
+      }
+
+      // Found slots — book them
+      return this._bookSlots(consecutive, slots, date, dayLabel, course.name);
     }
+
+    // Both courses failed
+    logger.error(`No consecutive slots on either course for ${date} (${dayLabel})`);
+    for (const slot of slots) {
+      await db.markFailed(slot.id, `No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on Pines or Oaks`);
+    }
+    notify.alertFailure({ date, dayLabel, error: `No consecutive slots in ${windowStart}-${windowEnd} on either course` });
+    return { booked: 0, failed: slots.length, partial: 0 };
+  }
+
+  async _bookSlots(consecutive, slots, date, dayLabel, courseName) {
+    const result = { booked: 0, failed: 0, partial: 0 };
+    const slotsNeeded = slots.length;
 
     let bookedCount = 0;
     for (let i = 0; i < consecutive.length; i++) {
@@ -160,6 +145,7 @@ class BookingEngine {
       if (bookResult.success) {
         await db.markSuccess(dbSlot.id, {
           actualTime: teeTime.time,
+          course: courseName,
           confirmationNumber: bookResult.confirmationNumber || 'CONFIRMED',
           screenshotPath: bookResult.screenshotPath,
         });

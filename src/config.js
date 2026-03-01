@@ -1,4 +1,43 @@
 require('dotenv').config();
+const path = require('path');
+const fs = require('fs');
+
+// Load schedule from schedule.json
+const dayMap = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const schedulePath = path.join(__dirname, '..', 'schedule.json');
+let rawSchedule = [];
+if (fs.existsSync(schedulePath)) {
+  rawSchedule = JSON.parse(fs.readFileSync(schedulePath, 'utf8'));
+} else {
+  console.error('ERROR: schedule.json not found in project root.');
+  process.exit(1);
+}
+
+function formatTimeLabel(start, end) {
+  const fmt = (t) => {
+    const [h, m] = t.split(':').map(Number);
+    const hour = h % 12 || 12;
+    const ampm = h < 12 ? 'AM' : 'PM';
+    return m === 0 ? `${hour} ${ampm}` : `${hour}:${String(m).padStart(2, '0')} ${ampm}`;
+  };
+  return `${fmt(start)}-${fmt(end)}`;
+}
+
+const schedule = rawSchedule.map(entry => {
+  const dayNum = dayMap[entry.day.toLowerCase()];
+  if (dayNum === undefined) {
+    console.error(`ERROR: Invalid day "${entry.day}" in schedule.json. Use: Sunday, Monday, ..., Saturday`);
+    process.exit(1);
+  }
+  return {
+    day: dayNum,
+    windowStart: entry.windowStart,
+    windowEnd: entry.windowEnd,
+    players: entry.players,
+    slots: entry.slots,
+    label: `${entry.day} ${formatTimeLabel(entry.windowStart, entry.windowEnd)}`,
+  };
+});
 
 const config = {
   // Credentials
@@ -35,14 +74,8 @@ const config = {
     },
   },
 
-  // Recurring schedule: dayOfWeek (0=Sun, 1=Mon, ..., 6=Sat)
-  // windowStart/windowEnd define the acceptable time range for booking
-  schedule: [
-    { day: 1, windowStart: '12:00', windowEnd: '13:00', players: 12, slots: 3, label: 'Monday 12-1 PM' },
-    { day: 2, windowStart: '12:00', windowEnd: '13:00', players: 8, slots: 2, label: 'Tuesday 12-1 PM' },
-    { day: 5, windowStart: '12:00', windowEnd: '13:00', players: 12, slots: 3, label: 'Friday 12-1 PM' },
-    { day: 6, windowStart: '09:00', windowEnd: '10:00', players: 12, slots: 3, label: 'Saturday 9-10 AM' },
-  ],
+  // Recurring schedule (loaded from schedule.json)
+  schedule,
 };
 
 // Validate required config
