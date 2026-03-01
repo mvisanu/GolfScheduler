@@ -1153,53 +1153,118 @@ class SiteAutomation {
     const baseUrl = config.site.memberUrl;
     let foundPage = false;
 
-    // Try direct URL patterns first
-    const urlPatterns = [
-      `${baseUrl}/reservations`,
-      `${baseUrl}/my-tee-times`,
-      `${baseUrl}/my-bookings`,
-      `${baseUrl}/upcoming`,
-    ];
-
-    for (const url of urlPatterns) {
+    // Try clicking nav links in the header
+    const navLabels = ['Reservations', 'My Tee Times', 'My Bookings', 'Upcoming', 'My Reservations'];
+    for (const label of navLabels) {
       try {
-        const response = await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        if (response && response.status() < 400) {
+        const link = await this.page.$(`a:has-text("${label}"), button:has-text("${label}")`);
+        if (link && await link.isVisible()) {
+          await link.click();
           await this.page.waitForTimeout(3000);
-          // Verify we're on a reservations-like page (not redirected to home)
+          // Verify we didn't land on a "PAGE NOT FOUND" page
           const pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 2000));
-          if (/reservat|my tee|my book|upcoming|booked/i.test(pageText)) {
-            logger.info(`Found reservations page at: ${url}`);
-            foundPage = true;
-            break;
+          if (/page not found|404|not found/i.test(pageText)) {
+            logger.warn(`"${label}" nav link led to a 404 page — trying next`);
+            continue;
           }
+          logger.info(`Clicked nav link: "${label}" → ${this.page.url()}`);
+          foundPage = true;
+          break;
         }
       } catch {
-        // Try next URL
+        // Try next
       }
     }
 
-    // Fallback: try clicking nav links
+    // Try user dropdown menu items (Account, Dashboard, Tee Time Alerts)
     if (!foundPage) {
-      // Navigate back to base first
-      try {
-        await this.page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await this.page.waitForTimeout(3000);
-      } catch { /* continue */ }
-
-      const navLabels = ['Reservations', 'My Tee Times', 'My Bookings', 'Upcoming', 'My Reservations'];
-      for (const label of navLabels) {
+      // Open user menu by clicking on the user name/icon area
+      const userMenuSelectors = [
+        '[class*="user"] button', '[class*="User"] button',
+        'header button:has-text("Visanu")', 'header a:has-text("Visanu")',
+        '[class*="account" i]', '[aria-label*="account" i]',
+        'header svg[data-testid="PersonIcon"]',
+      ];
+      for (const sel of userMenuSelectors) {
         try {
-          const link = await this.page.$(`a:has-text("${label}"), button:has-text("${label}")`);
-          if (link && await link.isVisible()) {
-            await link.click();
+          const el = await this.page.$(sel);
+          if (el && await el.isVisible()) {
+            await el.evaluate(e => e.click());
+            await this.page.waitForTimeout(1500);
+            logger.info(`Opened user menu via: ${sel}`);
+            break;
+          }
+        } catch { /* try next */ }
+      }
+
+      // Also try clicking the user name text directly
+      try {
+        const userNameEl = await this.page.evaluate(() => {
+          const els = document.querySelectorAll('header span, header a, header button, header p');
+          for (const el of els) {
+            if (el.textContent.trim().length > 3 && el.textContent.trim().length < 40 &&
+                !['Tee Times', 'Course Info', 'Reservations'].includes(el.textContent.trim())) {
+              const rect = el.getBoundingClientRect();
+              if (rect.left > window.innerWidth * 0.5 && rect.top < 50) {
+                el.click();
+                return el.textContent.trim();
+              }
+            }
+          }
+          return null;
+        });
+        if (userNameEl) {
+          logger.info(`Clicked user name: "${userNameEl}"`);
+          await this.page.waitForTimeout(1500);
+        }
+      } catch { /* ignore */ }
+
+      // Now look for menu items
+      const menuLabels = ['Dashboard', 'Tee Time Alerts', 'Account', 'My Reservations', 'My Bookings'];
+      for (const label of menuLabels) {
+        try {
+          const item = await this.page.$(`a:has-text("${label}"), button:has-text("${label}"), [role="menuitem"]:has-text("${label}")`);
+          if (item && await item.isVisible()) {
+            await item.click();
             await this.page.waitForTimeout(3000);
-            logger.info(`Clicked nav link: "${label}"`);
+            const pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 2000));
+            if (/page not found|404/i.test(pageText)) {
+              logger.warn(`"${label}" menu item led to a 404 — trying next`);
+              continue;
+            }
+            logger.info(`Clicked user menu item: "${label}" → ${this.page.url()}`);
             foundPage = true;
             break;
           }
         } catch {
           // Try next
+        }
+      }
+    }
+
+    // Fallback: try direct URL patterns
+    if (!foundPage) {
+      const urlPatterns = [
+        `${baseUrl}/my-tee-times`,
+        `${baseUrl}/my-bookings`,
+        `${baseUrl}/upcoming`,
+      ];
+
+      for (const url of urlPatterns) {
+        try {
+          const response = await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          if (response && response.status() < 400) {
+            await this.page.waitForTimeout(3000);
+            const pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 2000));
+            if (/page not found|404/i.test(pageText)) continue;
+            if (/reservat|my tee|my book|upcoming|booked/i.test(pageText)) {
+              logger.info(`Found reservations page at: ${url}`);
+              foundPage = true;
+              break;
+            }
+          }
+        } catch {
+          // Try next URL
         }
       }
     }
