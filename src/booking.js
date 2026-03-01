@@ -103,8 +103,9 @@ class BookingEngine {
       allCourses.find(c => c.name !== preferred),
     ];
 
+    // Pass 1: Try to find consecutive slots on each course (ideal)
     for (const course of coursesToTry) {
-      logger.info(`Trying ${course.name} course for ${date}...`);
+      logger.info(`Trying ${course.name} course for ${date} (consecutive)...`);
       await this.site.navigateToBooking(course.id, date);
       await this.site.selectCourse();
       await this.site.selectDate(date);
@@ -116,22 +117,60 @@ class BookingEngine {
       }
 
       const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
-      if (consecutive.length === 0) {
-        logger.warn(`No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on ${course.name}`);
+      if (consecutive.length > 0) {
+        const result = await this._bookSlots(consecutive, slots, date, dayLabel, course.name);
+        if (result.booked === slotsNeeded) {
+          notify.alertSuccess({ date, dayLabel, slots: result.booked, course: course.name });
+        } else if (result.booked > 0) {
+          notify.alertPartialBooking({ date, dayLabel, bookedSlots: result.booked, totalSlots: slotsNeeded });
+        }
+        return result;
+      }
+      logger.warn(`No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on ${course.name}`);
+    }
+
+    // Pass 2: Fallback — book any available individual slots in window across both courses
+    logger.info(`No consecutive slots found — falling back to individual slot booking for ${date}`);
+    const remainingSlots = [...slots];
+    const result = { booked: 0, failed: 0, partial: 0 };
+
+    for (const course of coursesToTry) {
+      if (remainingSlots.length === 0) break;
+
+      logger.info(`Trying individual slots on ${course.name} for ${date}...`);
+      await this.site.navigateToBooking(course.id, date);
+      await this.site.selectCourse();
+      await this.site.selectDate(date);
+
+      const teeTimes = await this.site.getAvailableTeeTimes();
+      const available = this.site.findSlotsInWindow(teeTimes, windowStart, windowEnd, remainingSlots.length);
+
+      if (available.length === 0) {
+        logger.warn(`No slots in ${windowStart}-${windowEnd} on ${course.name}`);
         continue;
       }
 
-      // Found slots — book them
-      return this._bookSlots(consecutive, slots, date, dayLabel, course.name);
+      logger.info(`Found ${available.length} individual slots on ${course.name}: ${available.map(t => t.time).join(', ')}`);
+
+      const booked = await this._bookSlots(available, remainingSlots.splice(0, available.length), date, dayLabel, course.name);
+      result.booked += booked.booked;
+      result.failed += booked.failed;
+      result.partial += booked.partial;
     }
 
-    // Both courses failed
-    logger.error(`No consecutive slots on either course for ${date} (${dayLabel})`);
-    for (const slot of slots) {
-      await db.markFailed(slot.id, `No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on Pines or Oaks`);
+    // Mark any remaining unbooked slots as failed
+    for (const slot of remainingSlots) {
+      await db.markFailed(slot.id, `No available slots in ${windowStart}-${windowEnd} on either course`);
+      result.failed++;
     }
-    notify.alertFailure({ date, dayLabel, error: `No consecutive slots in ${windowStart}-${windowEnd} on either course` });
-    return { booked: 0, failed: slots.length, partial: 0 };
+
+    if (result.booked > 0 && result.booked < slotsNeeded) {
+      notify.alertPartialBooking({ date, dayLabel, bookedSlots: result.booked, totalSlots: slotsNeeded });
+    } else if (result.booked === 0) {
+      notify.alertFailure({ date, dayLabel, error: `No slots in ${windowStart}-${windowEnd} on either course` });
+    }
+
+    return result;
   }
 
   async _bookSlots(consecutive, slots, date, dayLabel, courseName) {
@@ -189,20 +228,6 @@ class BookingEngine {
       }
 
       await new Promise(r => setTimeout(r, 2000));
-    }
-
-    if (bookedCount > 0 && bookedCount < slotsNeeded) {
-      result.partial++;
-      const screenshotPath = await this.site.screenshot(`partial-${date}`);
-      notify.alertPartialBooking({
-        date,
-        dayLabel,
-        bookedSlots: bookedCount,
-        totalSlots: slotsNeeded,
-        screenshotPath,
-      });
-    } else if (bookedCount === slotsNeeded) {
-      notify.alertSuccess({ date, dayLabel, slots: bookedCount, course: courseName });
     }
 
     return result;

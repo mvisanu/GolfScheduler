@@ -626,6 +626,26 @@ class SiteAutomation {
     return [];
   }
 
+  /**
+   * Find any available slots within the time window (not necessarily consecutive).
+   * Returns up to `maxSlots` slots sorted by time.
+   */
+  findSlotsInWindow(teeTimes, windowStart, windowEnd, maxSlots) {
+    const winStartMin = this._timeToMinutes(windowStart);
+    const winEndMin = this._timeToMinutes(windowEnd);
+
+    const sorted = [...teeTimes].sort(
+      (a, b) => this._timeToMinutes(a.time) - this._timeToMinutes(b.time)
+    );
+
+    const inWindow = sorted.filter(t => {
+      const mins = this._timeToMinutes(t.time);
+      return mins >= winStartMin && mins <= winEndMin;
+    });
+
+    return inWindow.slice(0, maxSlots);
+  }
+
   _getConsecutiveFrom(sorted, startIdx, count) {
     if (startIdx + count > sorted.length) return null;
 
