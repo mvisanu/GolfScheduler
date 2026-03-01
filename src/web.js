@@ -3,7 +3,6 @@ const path = require('path');
 const db = require('./db');
 const config = require('./config');
 const logger = require('./logger');
-const { computeBookingSlots } = require('./scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -14,9 +13,6 @@ app.get('/api/bookings', async (req, res) => {
 });
 
 app.get('/', async (req, res) => {
-  // Ensure DB has slots computed
-  const slots = computeBookingSlots();
-  await db.ensureBookings(slots);
   const bookings = await db.getAllUpcoming();
 
   // Group bookings by date

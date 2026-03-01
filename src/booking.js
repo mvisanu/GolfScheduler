@@ -229,6 +229,12 @@ class BookingEngine {
       const slotMinutes = this._timeToMinutes(slot.target_time);
       const match = existingReservations.find(res => {
         const resMinutes = this._timeToMinutes(res.time);
+        // If slot has a booking window, match any reservation within window ±2hr (covers all fallback offsets)
+        if (slot.window_start && slot.window_end) {
+          const winStart = this._timeToMinutes(slot.window_start) - 120;
+          const winEnd   = this._timeToMinutes(slot.window_end)   + 120;
+          return resMinutes >= winStart && resMinutes <= winEnd;
+        }
         return Math.abs(resMinutes - slotMinutes) <= 15;
       });
 

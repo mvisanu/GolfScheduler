@@ -10,11 +10,11 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
 - **Existing reservation check** — checks the site's Reservations page before booking; skips slots already booked (prevents double-booking across runs or manual bookings)
-- **4-step course/time fallback:** Preferred course → Other course → Preferred +1hr → Other +1hr
+- **10-attempt course/time fallback:** 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other — locks to the first course that gets a booking
 - **Two-pass slot strategy:** consecutive slots first, then individual fallback
 - **Individual checkout per slot:** Book Now → 4 golfers → Add to Cart → Agree to Terms → Complete Your Purchase
 - **Cart cleanup** — clears stale cart items after login to avoid "cart limit" errors
-- **Calendar web view** at http://localhost:3000 with color-coded booking status
+- **Calendar web view** at http://localhost:3002 with color-coded booking status
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
 - **Screenshot capture** at every booking step for verification
 - **Retry logic** — failed slots retry up to 3 times across runs
@@ -60,11 +60,11 @@ Edit `schedule.json` in the project root:
   },
   {
     "day": "Saturday",
-    "windowStart": "09:00",
-    "windowEnd": "10:00",
+    "windowStart": "08:00",
+    "windowEnd": "13:00",
     "players": 12,
     "slots": 3,
-    "course": "Oaks"
+    "course": "Pines"
   }
 ]
 ```
@@ -88,7 +88,7 @@ npm run book
 # Check booking status in terminal
 npm run status
 
-# Calendar web view (http://localhost:3000)
+# Calendar web view (http://localhost:3002)
 npm run web
 
 # Initialize database without booking
@@ -116,7 +116,7 @@ Shows a table of all upcoming bookings with date, day, time, slot, course, statu
 npm run web
 ```
 
-Opens a calendar view at **http://localhost:3000** showing:
+Opens a calendar view at **http://localhost:3002** showing:
 - Current and next month calendars
 - Each booked tee time with course name (Pines/Oaks)
 - Color-coded status: green (confirmed), amber (pending), red (failed)
@@ -129,22 +129,20 @@ Opens a calendar view at **http://localhost:3000** showing:
 
 ### Pre-booking check
 
-Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. Any slot that matches an existing reservation (within ±15 minutes) is marked as `confirmed` and skipped. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
+Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. Any slot that matches an existing reservation is marked as `confirmed` and skipped. Match logic: slots with a booking window (all current schedules) match within `window ±2hr`; fixed-time slots match within `±15 min`. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
 
-### 4-step course and time fallback
+### 10-attempt course and time fallback
 
-For each scheduled day, the bot tries up to 4 combinations in order:
+For each scheduled day, the bot tries up to 10 combinations in order — 5 time offsets on the preferred course, then 5 on the other:
 
-| Step | Course | Time Window |
-|------|--------|-------------|
-| 1 | Preferred (from schedule) | Original window |
-| 2 | Other course | Original window |
-| 3 | Preferred | +1 hour |
-| 4 | Other course | +1 hour |
+| Attempt | Course | Time Offset |
+|---------|--------|-------------|
+| 1–5 | Preferred (from schedule) | 0, −1hr, +1hr, −2hr, +2hr |
+| 6–10 | Other course | 0, −1hr, +1hr, −2hr, +2hr |
 
-At each step, the bot first looks for **consecutive** tee times (ideal for group play). If not enough consecutive slots exist, it falls back to **individual** slots within the window.
+At each attempt, the bot first looks for **consecutive** tee times (ideal for group play). If not enough consecutive slots exist, it falls back to **individual** slots within the window.
 
-Once all needed slots are booked, remaining steps are skipped. If some slots are booked but not all, only the remaining slots carry forward to the next step.
+Once a slot is booked on a course, the engine **locks to that course** for all remaining slots on that day (no splitting across Pines/Oaks). Remaining attempts are skipped once all slots are filled.
 
 ### Per-slot checkout
 

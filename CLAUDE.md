@@ -10,7 +10,7 @@ npm run dry-run       # Show what would be booked without booking
 npm run status        # Print table of all upcoming bookings
 npm run init          # Populate DB with computed slots (no booking)
 npm run scheduler     # Run continuously, booking every 6 hours
-npm run web           # Start calendar web view at http://localhost:3000
+npm run web           # Start calendar web view at http://localhost:3002
 npm run cancel -- <date>  # Cancel all reservations for a date (YYYY-MM-DD, MM/DD, MM-DD)
 ```
 
@@ -37,7 +37,7 @@ No build step, no tests, no linter. Raw Node.js execution.
 | Monday    | 12:00-13:00 | 12      | 3     | Pines            |
 | Tuesday   | 12:00-13:00 | 8       | 2     | Pines            |
 | Friday    | 12:00-13:00 | 12      | 3     | Pines            |
-| Saturday  | 09:00-10:00 | 12      | 3     | Pines            |
+| Saturday  | 08:00-13:00 | 12      | 3     | Pines            |
 
 Each slot = 4 players. Consecutive tee times spaced ~10 min apart. Falls back to other course and +1hr window if preferred is unavailable.
 
@@ -49,8 +49,8 @@ Each slot = 4 players. Consecutive tee times spaced ~10 min apart. Falls back to
 - **MUI overlay workaround**: `_dismissModals()` clicks backdrops, presses Escape; all clicks use `el.evaluate(el => el.click())` to bypass `MuiBackdrop-root` pointer interception
 - **Consecutive slot matching**: `findConsecutiveSlots()` searches ±fallbackMinutes (default 30) for N slots with 5-15 min gaps
 - **Course selection**: `selectCourse(courseName)` takes 'Pines' or 'Oaks' — dynamically selects the requested course via dropdown or filter buttons
-- **Pre-booking reservation check**: `getExistingReservations(date)` navigates to `/reservations` page, extracts existing bookings for the target date (time, course, players). Slots matching existing reservations (±15 min) are marked confirmed and skipped.
-- **4-step course/time fallback** (in booking.js `_processGroup`): 1) Preferred course at original window → 2) Other course at original window → 3) Preferred course +1hr → 4) Other course +1hr. Each step tries consecutive slots first, then individual. Booked slots are filtered between steps.
+- **Pre-booking reservation check**: `getExistingReservations(date)` navigates to `/reservations` page, extracts existing bookings for the target date (time, course, players). Slots are matched against existing reservations and marked confirmed/skipped. Match logic: slots with a booking window use `window ±2hr` (covers all fallback offsets); fixed-time slots use `±15 min`.
+- **10-attempt course/time fallback** (in booking.js `_processGroup`): tries offsets `[0, -1hr, +1hr, -2hr, +2hr]` on preferred course first, then all 5 on the other course (10 total). Each attempt tries consecutive slots first, then individual. Once any slot is booked, the engine locks to that course for the remaining slots.
 - **Booking flow**: Book Now → select 4 golfers → ADD TO CART → complete checkout → verify on Reservations page
 - **Post-checkout verification**: `verifyBookingOnSite(date, time)` checks the Reservations page after each checkout. If the booking is not found, it's marked failed instead of confirmed.
 - **Cart cleanup**: `clearCart()` removes stale cart items after login to avoid "cart limit" errors
