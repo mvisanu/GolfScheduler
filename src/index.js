@@ -15,7 +15,22 @@ program
     const engine = new BookingEngine({ dryRun: opts.dryRun });
     const stats = await engine.run();
     console.log('\nResults:', JSON.stringify(stats, null, 2));
-    process.exit(stats.failed > 0 ? 1 : 0);
+
+    // After a real booking run, launch the web calendar view
+    if (!opts.dryRun && stats.total > 0) {
+      console.log('\nStarting calendar web view...');
+      const { startServer } = require('./web');
+      const server = await startServer();
+      // Open browser to the calendar
+      const { exec } = require('child_process');
+      const url = 'http://localhost:3000';
+      const openCmd = process.platform === 'win32' ? `start ${url}` :
+                      process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
+      exec(openCmd);
+      console.log(`Calendar view open at ${url} — press Ctrl+C to stop`);
+    } else {
+      process.exit(stats.failed > 0 ? 1 : 0);
+    }
   });
 
 program

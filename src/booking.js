@@ -111,17 +111,18 @@ class BookingEngine {
     const preferred = slots[0].course || 'Pines';
     const other = preferred === 'Pines' ? 'Oaks' : 'Pines';
 
-    // Explicit 4-step fallback order:
-    // 1. Preferred course at original time window
-    // 2. Other course at original time window
-    // 3. Preferred course at +1 hour window
-    // 4. Other course at +1 hour window
-    const attempts = [
-      { course: preferred, start: baseStart,                      end: baseEnd },
-      { course: other,     start: baseStart,                      end: baseEnd },
-      { course: preferred, start: this._shiftTime(baseStart, 60), end: this._shiftTime(baseEnd, 60) },
-      { course: other,     start: this._shiftTime(baseStart, 60), end: this._shiftTime(baseEnd, 60) },
-    ];
+    // Build fallback attempts: for each time offset, try preferred then other course
+    // Offsets: original → -1hr → +1hr → -2hr → +2hr
+    const offsets = [0, -60, 60, -120, 120];
+    const attempts = [];
+    for (const offset of offsets) {
+      const start = offset === 0 ? baseStart : this._shiftTime(baseStart, offset);
+      const end   = offset === 0 ? baseEnd   : this._shiftTime(baseEnd, offset);
+      // Don't add windows with negative times (before midnight)
+      if (this._timeToMinutes(start) < 0 || this._timeToMinutes(end) < 0) continue;
+      attempts.push({ course: preferred, start, end, offset });
+      attempts.push({ course: other,     start, end, offset });
+    }
 
     const totalSlots = slots.length;
     const cumulative = { booked: 0, failed: 0, partial: 0 };
@@ -129,8 +130,9 @@ class BookingEngine {
     for (const [i, attempt] of attempts.entries()) {
       if (slots.length === 0) break;
 
-      const label = `${attempt.course} ${attempt.start}-${attempt.end}`;
-      logger.info(`Attempt ${i + 1}/4: ${label} (${slots.length} slots needed)`);
+      const offsetLabel = attempt.offset === 0 ? '' : ` (${attempt.offset > 0 ? '+' : ''}${attempt.offset / 60}hr)`;
+      const label = `${attempt.course} ${attempt.start}-${attempt.end}${offsetLabel}`;
+      logger.info(`Attempt ${i + 1}/${attempts.length}: ${label} (${slots.length} slots needed)`);
 
       const result = await this._tryCourse(slots, date, dayLabel, attempt.course, attempt.start, attempt.end);
 
@@ -159,9 +161,9 @@ class BookingEngine {
       notify.alertPartialBooking({ date, dayLabel, bookedSlots: cumulative.booked, totalSlots });
     } else {
       for (const slot of slots) {
-        await db.markFailed(slot.id, `No slots on ${preferred} or ${other} in ${baseStart}-${baseEnd} or +1hr`);
+        await db.markFailed(slot.id, `No slots on ${preferred} or ${other} across all time windows (±2hr)`);
       }
-      notify.alertFailure({ date, dayLabel, error: `No slots available on either course in original or +1hr window` });
+      notify.alertFailure({ date, dayLabel, error: `No slots available on either course across all time windows (±2hr)` });
     }
 
     return cumulative;
