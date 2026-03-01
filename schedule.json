@@ -25,8 +25,8 @@
   },
   {
     "day": "Saturday",
-    "windowStart": "09:00",
-    "windowEnd": "10:00",
+    "windowStart": "08:00",
+    "windowEnd": "13:00",
     "players": 12,
     "slots": 3,
     "course": "Pines"

@@ -10,7 +10,8 @@
     "status": "node src/index.js status",
     "scheduler": "node src/index.js scheduler",
     "init": "node src/index.js init",
-    "web": "node src/index.js web"
+    "web": "node src/index.js web",
+    "cancel": "node src/index.js cancel"
   },
   "dependencies": {
     "commander": "^12.1.0",

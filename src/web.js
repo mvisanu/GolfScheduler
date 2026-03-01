@@ -6,7 +6,7 @@ const logger = require('./logger');
 const { computeBookingSlots } = require('./scheduler');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 
 app.get('/api/bookings', async (req, res) => {
   const bookings = await db.getAllUpcoming();
@@ -64,6 +64,7 @@ app.get('/', async (req, res) => {
     .chip-failed { background: #ef4444; }
     .chip-partial { background: #f97316; }
     .chip-skipped { background: #9ca3af; display: none; }
+    .chip-cancelled { background: #6b7280; text-decoration: line-through; }
     .month-nav { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
     .month-nav h2 { font-size: 1.3rem; }
     .month-nav button { background: #cb6301; color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
@@ -77,6 +78,7 @@ app.get('/', async (req, res) => {
     .badge-pending { background: #f59e0b; }
     .badge-failed { background: #ef4444; }
     .badge-partial { background: #f97316; }
+    .badge-cancelled { background: #6b7280; }
   </style>
 </head>
 <body>
@@ -179,7 +181,8 @@ function generateCalendarHTML(year, month, byDate) {
         for (const s of slots) {
           const displayTime = s.actual_time || s.target_time;
           const course = s.course || 'Pines';
-          html += `<div class="booking-chip chip-${s.status}" title="${label} — ${course}">${displayTime} ${course}</div>`;
+          const resNum = s.confirmation_number && s.confirmation_number !== 'EXISTING_RESERVATION' ? ` — Res #${s.confirmation_number}` : '';
+          html += `<div class="booking-chip chip-${s.status}" title="${label} — ${course}${resNum}">${displayTime} ${course}</div>`;
         }
       }
     }

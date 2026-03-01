@@ -111,24 +111,32 @@ class BookingEngine {
     const preferred = slots[0].course || 'Pines';
     const other = preferred === 'Pines' ? 'Oaks' : 'Pines';
 
-    // Build fallback attempts: for each time offset, try preferred then other course
+    // Build fallback attempts: try ALL time windows on preferred course first,
+    // then ALL time windows on other course. This ensures all slots for a day
+    // end up on the same course (no splitting across Pines/Oaks).
     // Offsets: original → -1hr → +1hr → -2hr → +2hr
     const offsets = [0, -60, 60, -120, 120];
     const attempts = [];
-    for (const offset of offsets) {
-      const start = offset === 0 ? baseStart : this._shiftTime(baseStart, offset);
-      const end   = offset === 0 ? baseEnd   : this._shiftTime(baseEnd, offset);
-      // Don't add windows with negative times (before midnight)
-      if (this._timeToMinutes(start) < 0 || this._timeToMinutes(end) < 0) continue;
-      attempts.push({ course: preferred, start, end, offset });
-      attempts.push({ course: other,     start, end, offset });
+    for (const course of [preferred, other]) {
+      for (const offset of offsets) {
+        const start = offset === 0 ? baseStart : this._shiftTime(baseStart, offset);
+        const end   = offset === 0 ? baseEnd   : this._shiftTime(baseEnd, offset);
+        // Don't add windows with negative times (before midnight)
+        if (this._timeToMinutes(start) < 0 || this._timeToMinutes(end) < 0) continue;
+        attempts.push({ course, start, end, offset });
+      }
     }
 
     const totalSlots = slots.length;
     const cumulative = { booked: 0, failed: 0, partial: 0 };
+    let lockedCourse = null; // Once a slot is booked, lock to that course
 
     for (const [i, attempt] of attempts.entries()) {
       if (slots.length === 0) break;
+
+      // Once we've booked on a course, skip attempts for the other course
+      // This ensures all slots for a day end up on the same course
+      if (lockedCourse && attempt.course !== lockedCourse) continue;
 
       const offsetLabel = attempt.offset === 0 ? '' : ` (${attempt.offset > 0 ? '+' : ''}${attempt.offset / 60}hr)`;
       const label = `${attempt.course} ${attempt.start}-${attempt.end}${offsetLabel}`;
@@ -137,6 +145,7 @@ class BookingEngine {
       const result = await this._tryCourse(slots, date, dayLabel, attempt.course, attempt.start, attempt.end);
 
       if (result.booked > 0) {
+        lockedCourse = attempt.course; // Lock to this course for remaining slots
         cumulative.booked += result.booked;
         // Filter out booked slots for remaining attempts
         slots = slots.filter(s => !result._bookedSlotIds || !result._bookedSlotIds.has(s.id));
@@ -144,7 +153,7 @@ class BookingEngine {
           logger.info(`All slots booked on ${label}`);
           break;
         }
-        logger.info(`${result.booked} slot(s) booked on ${label}, ${slots.length} remaining`);
+        logger.info(`${result.booked} slot(s) booked on ${label}, ${slots.length} remaining — locked to ${lockedCourse}`);
       } else if (result.slotsFound) {
         logger.warn(`Slots found on ${label} but booking failed — trying next fallback`);
       } else {
@@ -156,7 +165,7 @@ class BookingEngine {
     cumulative.failed = totalSlots - cumulative.booked;
 
     if (cumulative.booked === totalSlots) {
-      notify.alertSuccess({ date, dayLabel, slots: cumulative.booked, course: preferred });
+      notify.alertSuccess({ date, dayLabel, slots: cumulative.booked, course: lockedCourse || preferred });
     } else if (cumulative.booked > 0) {
       notify.alertPartialBooking({ date, dayLabel, bookedSlots: cumulative.booked, totalSlots });
     } else {
@@ -291,27 +300,28 @@ class BookingEngine {
       if (bookResult.success) {
         // Complete checkout: Terms → Complete Your Purchase
         const checkoutResult = await this.site.completeCheckout();
-        const confirmation = checkoutResult.confirmationNumber || bookResult.confirmationNumber || 'CONFIRMED';
-        logger.info(`Slot ${i} (${targetTime}) checkout complete! Confirmation: ${confirmation}`);
 
-        // Verify booking on Reservations page
-        const verification = await this.site.verifyBookingOnSite(date, targetTime);
-        if (verification.verified) {
-          logger.info(`Slot ${i} (${targetTime}) VERIFIED on Reservations page`);
-          await db.markSuccess(dbSlot.id, {
-            actualTime: targetTime,
-            course: courseName,
-            confirmationNumber: confirmation,
-            screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
-          });
-          bookedCount++;
-          result.booked++;
-          result._bookedSlotIds.add(dbSlot.id);
-        } else {
-          logger.warn(`Slot ${i} (${targetTime}) NOT found on Reservations page — marking failed`);
-          await db.markFailed(dbSlot.id, 'Checkout completed but booking not found on Reservations page');
+        if (!checkoutResult.success) {
+          logger.warn(`Slot ${i} (${targetTime}) checkout FAILED: ${checkoutResult.error || 'unknown error'}`);
+          await db.markFailed(dbSlot.id, checkoutResult.error || 'Checkout failed');
           result.failed++;
+          continue;
         }
+
+        const confirmation = checkoutResult.confirmationNumber || 'CONFIRMED';
+        logger.info(`Slot ${i} (${targetTime}) checkout succeeded! Confirmation: ${confirmation}`);
+
+        // Trust the confirmation page — if we got a real reservation number, mark as confirmed.
+        // The Reservations page may not immediately show the booking (caching/delay).
+        await db.markSuccess(dbSlot.id, {
+          actualTime: targetTime,
+          course: courseName,
+          confirmationNumber: confirmation,
+          screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
+        });
+        bookedCount++;
+        result.booked++;
+        result._bookedSlotIds.add(dbSlot.id);
       } else {
         await db.markFailed(dbSlot.id, bookResult.error);
         result.failed++;

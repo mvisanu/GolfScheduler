@@ -97,6 +97,102 @@ program
   });
 
 program
+  .command('cancel <date>')
+  .description('Cancel all reservations for a specific date (YYYY-MM-DD)')
+  .action(async (date) => {
+    // Accept flexible date formats: YYYY-MM-DD, MM/DD, MM-DD
+    const db = require('./db');
+    const logger = require('./logger');
+    const SiteAutomation = require('./site');
+    const config = require('./config');
+
+    // Normalize date input
+    let normalizedDate = date;
+    if (/^\d{1,2}[/-]\d{1,2}$/.test(date)) {
+      // MM/DD or MM-DD — add current year
+      const [m, d] = date.split(/[/-]/);
+      const year = new Date().getFullYear();
+      normalizedDate = `${year}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    } else if (/^\d{1,2}[/-]\d{1,2}[/-]\d{4}$/.test(date)) {
+      // MM/DD/YYYY or MM-DD-YYYY
+      const [m, d, y] = date.split(/[/-]/);
+      normalizedDate = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(normalizedDate)) {
+      console.error(`Invalid date format: "${date}". Use YYYY-MM-DD, MM/DD, or MM-DD.`);
+      process.exit(1);
+    }
+
+    // Show what we're about to cancel
+    const bookings = await db.getConfirmedByDate(normalizedDate);
+    if (bookings.length === 0) {
+      console.log(`No confirmed bookings in database for ${normalizedDate}.`);
+      console.log('Will still check the golf site for reservations...\n');
+    } else {
+      console.log(`\nFound ${bookings.length} confirmed booking(s) for ${normalizedDate}:`);
+      for (const b of bookings) {
+        const time = b.actual_time || b.target_time;
+        console.log(`  ${time} ${b.course} — Slot ${b.slot_index} (Res#${b.confirmation_number || '?'})`);
+      }
+      console.log('');
+    }
+
+    console.log(`Cancelling all reservations for ${normalizedDate}...\n`);
+
+    const site = new SiteAutomation();
+    try {
+      await site.init();
+
+      // Navigate to booking page first to trigger login
+      await site.navigateToBooking(config.site.courses.pines.id, normalizedDate);
+      await site.login();
+
+      // Cancel reservations using their confirmation numbers
+      // Filter to only bookings with real confirmation numbers (not "access", "EXISTING_RESERVATION", etc.)
+      const cancelable = bookings.filter(b => b.confirmation_number && /^\d+$/.test(b.confirmation_number));
+      if (cancelable.length === 0) {
+        console.log('No bookings with valid confirmation numbers to cancel.');
+        console.log('Bookings without proper reservation numbers cannot be cancelled automatically.');
+        await site.close();
+        return;
+      }
+      console.log(`${cancelable.length} booking(s) with valid confirmation numbers to cancel.\n`);
+
+      const result = await site.cancelReservations(cancelable);
+
+      console.log(`\nCancellation Results:`);
+      console.log(`  Cancelled: ${result.cancelled}`);
+      console.log(`  Failed: ${result.failed}`);
+      for (const d of result.details) {
+        const status = d.success ? 'CANCELLED' : `FAILED (${d.error})`;
+        console.log(`  ${d.time} ${d.course} — ${status}`);
+      }
+
+      // Update DB for successfully cancelled bookings
+      if (result.cancelled > 0) {
+        let dbUpdated = 0;
+        for (const detail of result.details) {
+          if (!detail.success) continue;
+          const match = bookings.find(b => b.confirmation_number === detail.resNum);
+          if (match) {
+            await db.markCancelled(match.id);
+            dbUpdated++;
+          }
+        }
+        if (dbUpdated > 0) {
+          console.log(`\nUpdated ${dbUpdated} booking(s) in database to "cancelled".`);
+        }
+      }
+    } catch (error) {
+      console.error(`\nCancellation error: ${error.message}`);
+      logger.error(`Cancel command error: ${error.message}`);
+    } finally {
+      await site.close();
+    }
+  });
+
+program
   .command('web')
   .description('Start the calendar web view')
   .action(async () => {

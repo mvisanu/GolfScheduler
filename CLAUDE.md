@@ -11,6 +11,7 @@ npm run status        # Print table of all upcoming bookings
 npm run init          # Populate DB with computed slots (no booking)
 npm run scheduler     # Run continuously, booking every 6 hours
 npm run web           # Start calendar web view at http://localhost:3000
+npm run cancel -- <date>  # Cancel all reservations for a date (YYYY-MM-DD, MM/DD, MM-DD)
 ```
 
 No build step, no tests, no linter. Raw Node.js execution.

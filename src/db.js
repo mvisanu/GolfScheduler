@@ -182,4 +182,24 @@ module.exports = {
     `, { $id: id, $errorMessage: errorMessage });
     save();
   },
+
+  async markCancelled(id) {
+    await getDb();
+    run(`
+      UPDATE bookings
+      SET status = 'cancelled',
+          updated_at = datetime('now')
+      WHERE id = $id
+    `, { $id: id });
+    save();
+  },
+
+  async getConfirmedByDate(date) {
+    await getDb();
+    return queryAll(`
+      SELECT * FROM bookings
+      WHERE date = $date AND status = 'confirmed'
+      ORDER BY actual_time, target_time, slot_index
+    `, { $date: date });
+  },
 };
