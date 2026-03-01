@@ -36,7 +36,7 @@ function computeBookingSlots() {
           targetTime: slotTime,
           windowStart: entry.windowStart,
           windowEnd: entry.windowEnd,
-          course: config.site.courses.pines.name,
+          course: entry.preferredCourse || 'Pines',
           slotIndex: i,
           players: 4, // always 4 per slot
         });

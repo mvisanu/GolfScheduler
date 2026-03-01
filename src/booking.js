@@ -92,10 +92,15 @@ class BookingEngine {
     const windowEnd = slots[0].window_end || slots[0].target_time;
     const slotsNeeded = slots.length;
 
-    // Try Pines first, then Oaks
-    const coursesToTry = [
+    // Try preferred course first, then fallback
+    const preferred = slots[0].course || 'Pines';
+    const allCourses = [
       { id: config.site.courses.pines.id, name: 'Pines' },
       { id: config.site.courses.oaks.id, name: 'Oaks' },
+    ];
+    const coursesToTry = [
+      allCourses.find(c => c.name === preferred),
+      allCourses.find(c => c.name !== preferred),
     ];
 
     for (const course of coursesToTry) {
@@ -132,22 +137,49 @@ class BookingEngine {
   async _bookSlots(consecutive, slots, date, dayLabel, courseName) {
     const result = { booked: 0, failed: 0, partial: 0 };
     const slotsNeeded = slots.length;
+    const courseId = courseName === 'Oaks' ? config.site.courses.oaks.id : config.site.courses.pines.id;
+
+    // Store the times we want to book (element refs go stale after navigation)
+    const timesToBook = consecutive.map(t => t.time);
+    logger.info(`Will book ${timesToBook.length} slots individually: ${timesToBook.join(', ')}`);
 
     let bookedCount = 0;
-    for (let i = 0; i < consecutive.length; i++) {
-      const teeTime = consecutive[i];
+    for (let i = 0; i < timesToBook.length; i++) {
+      const targetTime = timesToBook[i];
       const dbSlot = slots[i];
 
-      logger.info(`Booking slot ${i}: ${teeTime.time} for ${dbSlot.players} players`);
+      logger.info(`Booking slot ${i}: ${targetTime} for ${dbSlot.players} players`);
 
-      const bookResult = await this.site.bookSlot(teeTime.element, i);
+      // Re-scan tee times to get fresh element references
+      if (i > 0) {
+        await this.site.navigateToBooking(courseId, date);
+        await this.site.selectCourse();
+        await this.site.selectDate(date);
+      }
+
+      const teeTimes = await this.site.getAvailableTeeTimes();
+      const match = teeTimes.find(t => t.time === targetTime);
+      if (!match) {
+        logger.warn(`Tee time ${targetTime} no longer available (may have just been booked)`);
+        await db.markFailed(dbSlot.id, `Tee time ${targetTime} no longer available`);
+        result.failed++;
+        continue;
+      }
+
+      // Book Now → 4 golfers → Add to Cart
+      const bookResult = await this.site.bookSlot(match.element, i);
 
       if (bookResult.success) {
+        // Complete checkout: Terms → Complete Your Purchase
+        const checkoutResult = await this.site.completeCheckout();
+        const confirmation = checkoutResult.confirmationNumber || bookResult.confirmationNumber || 'CONFIRMED';
+        logger.info(`Slot ${i} (${targetTime}) checkout complete! Confirmation: ${confirmation}`);
+
         await db.markSuccess(dbSlot.id, {
-          actualTime: teeTime.time,
+          actualTime: targetTime,
           course: courseName,
-          confirmationNumber: bookResult.confirmationNumber || 'CONFIRMED',
-          screenshotPath: bookResult.screenshotPath,
+          confirmationNumber: confirmation,
+          screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
         });
         bookedCount++;
         result.booked++;
@@ -157,17 +189,6 @@ class BookingEngine {
       }
 
       await new Promise(r => setTimeout(r, 2000));
-    }
-
-    // Complete checkout if items were added to cart
-    if (bookedCount > 0) {
-      const checkoutResult = await this.site.completeCheckout();
-      if (checkoutResult.confirmationNumber) {
-        logger.info(`Checkout complete! Confirmation: ${checkoutResult.confirmationNumber}`);
-      }
-      if (checkoutResult.screenshotPath) {
-        logger.info(`Checkout screenshot: ${checkoutResult.screenshotPath}`);
-      }
     }
 
     if (bookedCount > 0 && bookedCount < slotsNeeded) {

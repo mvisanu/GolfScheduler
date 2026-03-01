@@ -35,6 +35,7 @@ const schedule = rawSchedule.map(entry => {
     windowEnd: entry.windowEnd,
     players: entry.players,
     slots: entry.slots,
+    preferredCourse: entry.course || 'Pines',
     label: `${entry.day} ${formatTimeLabel(entry.windowStart, entry.windowEnd)}`,
   };
 });

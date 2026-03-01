@@ -779,15 +779,12 @@ class SiteAutomation {
   async completeCheckout() {
     logger.info('Completing checkout for cart items...');
 
-    // Look for cart/checkout button in the nav or page
+    // Step 1: Navigate to cart / checkout page
     const cartSelectors = [
       'a:has-text("Cart")',
       'button:has-text("Cart")',
       'a:has-text("Checkout")',
       'button:has-text("Checkout")',
-      'a:has-text("Complete Booking")',
-      'button:has-text("Complete Booking")',
-      'button:has-text("Confirm")',
       '[data-testid*="cart"]',
       '[class*="cart"]',
     ];
@@ -797,7 +794,7 @@ class SiteAutomation {
         const btn = await this.page.$(sel);
         if (btn && await btn.isVisible()) {
           await btn.evaluate(el => el.click());
-          logger.info(`Clicked checkout: ${sel}`);
+          logger.info(`Clicked cart/checkout: ${sel}`);
           await this.page.waitForTimeout(3000);
           break;
         }
@@ -806,28 +803,83 @@ class SiteAutomation {
       }
     }
 
-    // Look for a final "Complete" or "Confirm" button on the checkout page
-    const confirmSelectors = [
+    await this.screenshot('checkout-page');
+
+    // Step 2: Agree to Terms and Conditions checkbox
+    const termsSelectors = [
+      'input[type="checkbox"]',
+      'label:has-text("Terms")',
+      'label:has-text("terms")',
+      'span:has-text("I agree")',
+      '[class*="checkbox"]',
+    ];
+
+    let termsChecked = false;
+    for (const sel of termsSelectors) {
+      try {
+        const el = await this.page.$(sel);
+        if (el && await el.isVisible()) {
+          // For checkbox inputs, check if already checked
+          const isInput = await el.evaluate(e => e.tagName === 'INPUT');
+          if (isInput) {
+            const alreadyChecked = await el.evaluate(e => e.checked);
+            if (!alreadyChecked) {
+              await el.evaluate(e => e.click());
+              logger.info(`Checked Terms and Conditions via: ${sel}`);
+              termsChecked = true;
+            } else {
+              logger.info('Terms checkbox already checked');
+              termsChecked = true;
+            }
+          } else {
+            await el.evaluate(e => e.click());
+            logger.info(`Clicked Terms element: ${sel}`);
+            termsChecked = true;
+          }
+          await this.page.waitForTimeout(1000);
+          break;
+        }
+      } catch {
+        // Try next
+      }
+    }
+
+    if (!termsChecked) {
+      logger.warn('Could not find Terms and Conditions checkbox — proceeding anyway');
+    }
+
+    await this.screenshot('checkout-terms-agreed');
+
+    // Step 3: Click "Complete Your Purchase" button
+    const purchaseSelectors = [
+      'button:has-text("Complete Your Purchase")',
+      'button:has-text("Complete Purchase")',
       'button:has-text("Complete Booking")',
-      'button:has-text("Confirm")',
       'button:has-text("Place Order")',
-      'button:has-text("Submit")',
+      'button:has-text("Confirm")',
       'button:has-text("Complete")',
+      'button:has-text("Submit")',
       'button:has-text("Book Now")',
     ];
 
-    for (const sel of confirmSelectors) {
+    let purchaseClicked = false;
+    for (const sel of purchaseSelectors) {
       try {
         const btn = await this.page.$(sel);
         if (btn && await btn.isVisible()) {
           await btn.evaluate(el => el.click());
-          logger.info(`Confirmed checkout: ${sel}`);
+          logger.info(`Clicked purchase button: ${sel}`);
+          purchaseClicked = true;
           await this.page.waitForTimeout(5000);
           break;
         }
       } catch {
         // Try next
       }
+    }
+
+    if (!purchaseClicked) {
+      logger.warn('Could not find "Complete Your Purchase" button');
     }
 
     const screenshotPath = await this.screenshot('checkout-complete');
