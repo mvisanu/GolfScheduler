@@ -695,31 +695,33 @@ class SiteAutomation {
       await this.page.waitForTimeout(1000);
       await this.screenshot(`slot-${slotIndex}-players-set`);
 
-      // Step 2: Click "ADD TO CART"
-      const addToCartBtn = await this.page.$('button:has-text("Add to Cart"), button:has-text("ADD TO CART")');
-      if (addToCartBtn) {
-        await addToCartBtn.evaluate(el => el.click());
-        logger.info('Clicked "ADD TO CART"');
-        await this.page.waitForTimeout(3000);
-      } else {
-        logger.warn('No "ADD TO CART" button found — trying checkout directly');
+      // Step 2: Click "ADD TO CART" — find it specifically within the booking modal
+      let addedToCart = false;
+      const cartBtns = await this.page.$$('button');
+      for (const btn of cartBtns) {
+        try {
+          const text = await btn.evaluate(el => el.textContent.trim());
+          if (text === 'ADD TO CART' || text === 'Add to Cart' || text === 'Add To Cart') {
+            await btn.evaluate(el => el.click());
+            logger.info('Clicked "ADD TO CART"');
+            addedToCart = true;
+            await this.page.waitForTimeout(3000);
+            break;
+          }
+        } catch { /* skip */ }
+      }
+
+      if (!addedToCart) {
+        logger.warn('No "ADD TO CART" button found');
+        await this.screenshot(`slot-${slotIndex}-no-add-to-cart`);
       }
 
       await this.screenshot(`slot-${slotIndex}-added-to-cart`);
 
-      // Check if we need to complete checkout or if it was auto-confirmed
-      const confirmation = await this._extractConfirmation();
-      if (confirmation) {
-        logger.info(`Slot ${slotIndex} booked! Confirmation: ${confirmation}`);
-        const screenshotPath = await this.screenshot(`slot-${slotIndex}-booked`);
-        return { success: true, confirmationNumber: confirmation, screenshotPath };
-      }
-
-      // The item is in the cart — we may need to check out at the end
-      // For now, treat add-to-cart as success
+      // The item should now be in the cart
       logger.info(`Slot ${slotIndex} added to cart`);
       const screenshotPath = await this.screenshot(`slot-${slotIndex}-in-cart`);
-      return { success: true, confirmationNumber: 'ADDED_TO_CART', screenshotPath };
+      return { success: addedToCart, confirmationNumber: addedToCart ? 'ADDED_TO_CART' : null, error: addedToCart ? null : 'ADD TO CART button not found', screenshotPath };
 
     } catch (error) {
       const screenshotPath = await this.screenshot(`slot-${slotIndex}-error`);
@@ -730,35 +732,37 @@ class SiteAutomation {
 
   async _setPlayerCount(count) {
     // TeeItUp uses numbered buttons (1, 2, 3, 4) under "Select Number of Golfers"
-    // Try clicking the button with the exact number text
-    const numberBtn = await this.page.$(`button:has-text("${count}")`);
-    if (numberBtn) {
-      // Make sure it's a golfer count button (small, near "Select Number of Golfers")
-      const btnText = await numberBtn.evaluate(el => el.textContent.trim());
-      if (btnText === String(count)) {
-        await numberBtn.evaluate(el => el.click());
-        logger.info(`Set ${count} golfers via number button`);
-        return;
-      }
-    }
+    // IMPORTANT: Must scope to the booking modal to avoid clicking calendar day buttons
 
-    // Fallback: find all small buttons with numbers and click the right one
+    // Find all buttons and look for one with exact text matching the count,
+    // that is inside the booking modal (near "Select Number of Golfers" or "Select Rate")
     const allButtons = await this.page.$$('button');
     for (const btn of allButtons) {
       try {
-        const text = await btn.evaluate(el => el.textContent.trim());
-        if (text === String(count)) {
-          // Check if this button is near a "golfer" label
-          const nearby = await btn.evaluate(el => {
-            const parent = el.closest('[class*="golfer"], [class*="player"]') ||
-                          el.parentElement?.parentElement;
-            return parent?.textContent || '';
-          });
-          if (nearby.toLowerCase().includes('golfer') || nearby.toLowerCase().includes('player') || nearby.includes('1234'.slice(0, count))) {
-            await btn.evaluate(el => el.click());
-            logger.info(`Set ${count} golfers via numbered button (fallback)`);
-            return;
+        const info = await btn.evaluate((el, targetCount) => {
+          const text = el.textContent.trim();
+          if (text !== String(targetCount)) return null;
+
+          // Walk up to check if this button is inside the booking modal
+          // The modal contains "Select Number of Golfers" or "Select Rate" or "ADD TO CART"
+          let node = el.parentElement;
+          for (let i = 0; i < 10; i++) {
+            if (!node) break;
+            const parentText = node.textContent || '';
+            if (parentText.includes('Select Number of Golfers') ||
+                parentText.includes('Select Rate') ||
+                parentText.includes('ADD TO CART')) {
+              return { text, inModal: true };
+            }
+            node = node.parentElement;
           }
+          return null;
+        }, count);
+
+        if (info && info.inModal) {
+          await btn.evaluate(el => el.click());
+          logger.info(`Set ${count} golfers via modal button`);
+          return;
         }
       } catch {
         // Skip
@@ -794,120 +798,147 @@ class SiteAutomation {
   }
 
   /**
-   * Complete checkout after all tee times have been added to the cart.
+   * Complete checkout after a tee time has been added to the cart.
+   * Flow: Cart icon → Terms checkbox → Complete Your Purchase
    */
   async completeCheckout() {
-    logger.info('Completing checkout for cart items...');
+    logger.info('Completing checkout...');
 
-    // Step 1: Navigate to cart / checkout page
-    const cartSelectors = [
-      'a:has-text("Cart")',
-      'button:has-text("Cart")',
+    // After ADD TO CART, the site may show a cart icon/badge or redirect to checkout.
+    // Look for cart icon with item count, or a checkout/cart link in the nav.
+    await this.page.waitForTimeout(2000);
+    await this.screenshot('checkout-before-nav');
+
+    // Try to find and click on the cart icon/link to go to checkout page
+    // Look for cart indicators (badge, icon, nav link)
+    const cartNavSelectors = [
+      'a[href*="cart"]',
+      'a[href*="checkout"]',
+      '[class*="cart-icon"]',
+      '[class*="cartIcon"]',
+      '[class*="shopping-cart"]',
+      '[aria-label*="cart" i]',
+      '[aria-label*="Cart" i]',
+      'button:has-text("View Cart")',
+      'button:has-text("Go to Cart")',
+      'a:has-text("View Cart")',
       'a:has-text("Checkout")',
-      'button:has-text("Checkout")',
-      '[data-testid*="cart"]',
-      '[class*="cart"]',
     ];
 
-    for (const sel of cartSelectors) {
+    let navigatedToCart = false;
+    for (const sel of cartNavSelectors) {
       try {
-        const btn = await this.page.$(sel);
-        if (btn && await btn.isVisible()) {
-          await btn.evaluate(el => el.click());
-          logger.info(`Clicked cart/checkout: ${sel}`);
+        const el = await this.page.$(sel);
+        if (el && await el.isVisible()) {
+          await el.evaluate(e => e.click());
+          logger.info(`Navigated to cart via: ${sel}`);
+          navigatedToCart = true;
           await this.page.waitForTimeout(3000);
           break;
         }
+      } catch { /* try next */ }
+    }
+
+    if (!navigatedToCart) {
+      // Try navigating to checkout URL directly
+      try {
+        const currentUrl = this.page.url();
+        const baseUrl = new URL(currentUrl).origin;
+        await this.page.goto(`${baseUrl}/checkout`, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await this.page.waitForTimeout(3000);
+        logger.info('Navigated to /checkout directly');
+        navigatedToCart = true;
       } catch {
-        // Try next
+        logger.warn('Could not navigate to checkout page');
       }
     }
 
     await this.screenshot('checkout-page');
 
-    // Step 2: Agree to Terms and Conditions checkbox
-    const termsSelectors = [
-      'input[type="checkbox"]',
-      'label:has-text("Terms")',
-      'label:has-text("terms")',
-      'span:has-text("I agree")',
-      '[class*="checkbox"]',
-    ];
-
+    // Step 2: Agree to Terms and Conditions
+    // Look specifically for Terms-related checkboxes (not just any checkbox)
     let termsChecked = false;
-    for (const sel of termsSelectors) {
-      try {
-        const el = await this.page.$(sel);
-        if (el && await el.isVisible()) {
-          // For checkbox inputs, check if already checked
-          const isInput = await el.evaluate(e => e.tagName === 'INPUT');
-          if (isInput) {
-            const alreadyChecked = await el.evaluate(e => e.checked);
-            if (!alreadyChecked) {
-              await el.evaluate(e => e.click());
-              logger.info(`Checked Terms and Conditions via: ${sel}`);
-              termsChecked = true;
-            } else {
-              logger.info('Terms checkbox already checked');
-              termsChecked = true;
-            }
-          } else {
-            await el.evaluate(e => e.click());
-            logger.info(`Clicked Terms element: ${sel}`);
-            termsChecked = true;
+
+    // First try: find checkbox near "Terms" text
+    const termsResult = await this.page.evaluate(() => {
+      // Find any element containing "Terms" or "I agree"
+      const allElements = document.querySelectorAll('*');
+      for (const el of allElements) {
+        const text = el.textContent || '';
+        if ((text.includes('Terms') || text.includes('I agree')) && text.length < 200) {
+          // Look for a checkbox input nearby
+          const checkbox = el.querySelector('input[type="checkbox"]') ||
+                          el.closest('label')?.querySelector('input[type="checkbox"]');
+          if (checkbox && !checkbox.checked) {
+            checkbox.click();
+            return 'clicked-checkbox';
           }
-          await this.page.waitForTimeout(1000);
-          break;
+          // Maybe the element itself is clickable (label)
+          if (el.tagName === 'LABEL' || el.tagName === 'SPAN') {
+            el.click();
+            return 'clicked-label';
+          }
         }
-      } catch {
-        // Try next
       }
+      // Fallback: find any unchecked checkbox on the page
+      const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+      for (const cb of checkboxes) {
+        if (!cb.checked) {
+          cb.click();
+          return 'clicked-fallback-checkbox';
+        }
+      }
+      return null;
+    });
+
+    if (termsResult) {
+      logger.info(`Terms and Conditions: ${termsResult}`);
+      termsChecked = true;
+      await this.page.waitForTimeout(1000);
+    } else {
+      logger.warn('Could not find Terms and Conditions checkbox');
     }
 
-    if (!termsChecked) {
-      logger.warn('Could not find Terms and Conditions checkbox — proceeding anyway');
-    }
-
-    await this.screenshot('checkout-terms-agreed');
+    await this.screenshot('checkout-terms');
 
     // Step 3: Click "Complete Your Purchase" button
-    const purchaseSelectors = [
-      'button:has-text("Complete Your Purchase")',
-      'button:has-text("Complete Purchase")',
-      'button:has-text("Complete Booking")',
-      'button:has-text("Place Order")',
-      'button:has-text("Confirm")',
-      'button:has-text("Complete")',
-      'button:has-text("Submit")',
-      'button:has-text("Book Now")',
-    ];
-
-    let purchaseClicked = false;
-    for (const sel of purchaseSelectors) {
-      try {
-        const btn = await this.page.$(sel);
-        if (btn && await btn.isVisible()) {
-          await btn.evaluate(el => el.click());
-          logger.info(`Clicked purchase button: ${sel}`);
-          purchaseClicked = true;
-          await this.page.waitForTimeout(5000);
-          break;
+    // Search by exact text to avoid clicking wrong buttons (NOT "Book Now")
+    const purchaseResult = await this.page.evaluate(() => {
+      const buttons = document.querySelectorAll('button, input[type="submit"], a.btn, a.button');
+      const purchaseTexts = [
+        'Complete Your Purchase',
+        'Complete Purchase',
+        'Complete Booking',
+        'Place Order',
+        'Confirm Purchase',
+        'Submit Order',
+        'Pay Now',
+      ];
+      for (const btn of buttons) {
+        const text = btn.textContent.trim();
+        for (const target of purchaseTexts) {
+          if (text.includes(target)) {
+            btn.click();
+            return text;
+          }
         }
-      } catch {
-        // Try next
       }
-    }
+      return null;
+    });
 
-    if (!purchaseClicked) {
-      logger.warn('Could not find "Complete Your Purchase" button');
+    if (purchaseResult) {
+      logger.info(`Clicked purchase button: "${purchaseResult}"`);
+      await this.page.waitForTimeout(5000);
+    } else {
+      logger.warn('Could not find "Complete Your Purchase" button — purchase may not have completed');
     }
 
     const screenshotPath = await this.screenshot('checkout-complete');
     const confirmation = await this._extractConfirmation();
 
     return {
-      success: true,
-      confirmationNumber: confirmation || 'CHECKOUT_COMPLETE',
+      success: !!purchaseResult || termsChecked,
+      confirmationNumber: confirmation || (purchaseResult ? 'CHECKOUT_COMPLETE' : null),
       screenshotPath,
     };
   }

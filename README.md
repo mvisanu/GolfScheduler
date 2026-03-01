@@ -2,16 +2,20 @@
 
 Automated tee time booking bot for [Fort Walton Beach Golf](https://www.fwbgolf.com/) (TeeItUp platform).
 
-Keeps the schedule filled for the next 30 days with configurable recurring bookings:
+Keeps the schedule filled for the next 30 days with configurable recurring bookings. Tries the preferred course first, then falls back to the other course. If consecutive slots aren't available, books any individual slots in the time window to maximize golfers booked.
 
-| Day       | Time Window  | Players | Tee Times |
-|-----------|-------------|---------|-----------|
-| Monday    | 12:00–1:00 PM | 12      | 3 consecutive |
-| Tuesday   | 12:00–1:00 PM | 8       | 2 consecutive |
-| Friday    | 12:00–1:00 PM | 12      | 3 consecutive |
-| Saturday  | 9:00–10:00 AM | 12      | 3 consecutive |
+---
 
-Time windows are configurable in `src/config.js` — the bot finds the earliest available consecutive slots within each window.
+## Features
+
+- **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
+- **Two-pass booking strategy:** consecutive slots first, then individual fallback
+- **Course fallback:** tries preferred course (Pines/Oaks), then the other
+- **Individual checkout per slot:** Book Now → 4 golfers → Add to Cart → Agree to Terms → Complete Your Purchase
+- **Calendar web view** at http://localhost:3000 with color-coded booking status
+- **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
+- **Screenshot capture** at every booking step for verification
+- **Retry logic** — failed slots retry up to 3 times across runs
 
 ---
 
@@ -38,7 +42,39 @@ cp .env.example .env
 
 Edit `.env` and set your `GOLF_EMAIL` and `GOLF_PASSWORD`.
 
-### 4. Run
+### 4. Configure schedule
+
+Edit `schedule.json` in the project root:
+
+```json
+[
+  {
+    "day": "Monday",
+    "windowStart": "12:00",
+    "windowEnd": "13:00",
+    "players": 12,
+    "slots": 3,
+    "course": "Pines"
+  },
+  {
+    "day": "Saturday",
+    "windowStart": "09:00",
+    "windowEnd": "10:00",
+    "players": 12,
+    "slots": 3,
+    "course": "Oaks"
+  }
+]
+```
+
+Each entry:
+- **day** — day of week (Monday, Tuesday, ..., Saturday, Sunday)
+- **windowStart / windowEnd** — acceptable time range in 24h format
+- **players** — total golfers needed
+- **slots** — number of tee times (each holds 4 golfers)
+- **course** — preferred course: `"Pines"` or `"Oaks"` (falls back to the other if unavailable)
+
+### 5. Run
 
 ```bash
 # Dry run — see what would be booked (no actual bookings)
@@ -47,54 +83,93 @@ npm run dry-run
 # Book all pending tee times (single run)
 npm run book
 
-# Check booking status
+# Check booking status in terminal
 npm run status
 
-# Run continuously (every 6 hours)
-npm run scheduler
+# Calendar web view (http://localhost:3000)
+npm run web
 
 # Initialize database without booking
 npm run init
 
-# Calendar web view
+# Run continuously (every 6 hours)
+npm run scheduler
+```
+
+---
+
+## Viewing Your Schedule
+
+### Terminal
+
+```bash
+npm run status
+```
+
+Shows a table of all upcoming bookings with date, day, time, slot, course, status, confirmation number, and attempt count.
+
+### Web Calendar
+
+```bash
 npm run web
 ```
 
-### Web Calendar View
+Opens a calendar view at **http://localhost:3000** showing:
+- Current and next month calendars
+- Each booked tee time with course name (Pines/Oaks)
+- Color-coded status: green (confirmed), amber (pending), red (failed)
+- Detail table below with all booking information
+- API endpoint at `GET /api/bookings` for JSON data
 
-Run `npm run web` to start a local web server at http://localhost:3000 showing a calendar with all booked tee times, color-coded by status (confirmed, pending, failed). Each slot displays the booked time and course name (Pines/Oaks).
+---
+
+## Booking Strategy
+
+The bot uses a two-pass approach for each day:
+
+1. **Pass 1 — Consecutive slots:** Tries to find N consecutive tee times within the time window on the preferred course. If not found, tries the other course.
+
+2. **Pass 2 — Individual slots:** If no consecutive slots exist on either course, books any available individual slots within the window to maximize the number of golfers booked. Tries both courses.
+
+Each tee time is checked out individually:
+- Click **Book Now** on the tee time
+- Select **4 golfers**
+- Click **Add to Cart**
+- Check **I agree to Terms and Conditions**
+- Click **Complete Your Purchase**
+- Navigate back and book the next slot
 
 ---
 
 ## Scheduling (Automated Runs)
 
-### Windows Task Scheduler
+### Windows Task Scheduler (recommended: twice weekly)
+
+Run this in PowerShell as administrator:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\Bruce\source\repos\GolfScheduler\setup-scheduler.ps1
+```
+
+This creates a task that runs every **Monday and Thursday at 6:00 AM** to keep the next 30 days booked.
+
+**Manual setup:**
 
 1. Open **Task Scheduler** (search "Task Scheduler" in Start menu)
 2. Click **Create Basic Task**
 3. Name: `Golf Scheduler`
-4. Trigger: **Daily**, start at `6:00 AM`
+4. Trigger: **Weekly**, Monday and Thursday at `6:00 AM`
 5. Action: **Start a program**
    - Program: `C:\Program Files\nodejs\node.exe`
    - Arguments: `src/index.js book`
    - Start in: `C:\Users\Bruce\source\repos\GolfScheduler`
 6. Finish
 
-To run twice daily, edit the trigger and add a second schedule at `6:00 PM`.
-
-**Alternative — PowerShell one-liner to create the task:**
-
-```powershell
-$action = New-ScheduledTaskAction -Execute "node" -Argument "src/index.js book" -WorkingDirectory "C:\Users\Bruce\source\repos\GolfScheduler"
-$trigger = New-ScheduledTaskTrigger -Daily -At 6:00AM
-Register-ScheduledTask -TaskName "GolfScheduler" -Action $action -Trigger $trigger -Description "Auto-book golf tee times"
-```
-
 ### Mac/Linux (cron)
 
 ```bash
-# Run daily at 6 AM Central
-0 6 * * * cd /path/to/GolfScheduler && /usr/bin/node src/index.js book >> /tmp/golf-scheduler.log 2>&1
+# Run Monday and Thursday at 6 AM Central
+0 6 * * 1,4 cd /path/to/GolfScheduler && /usr/bin/node src/index.js book >> /tmp/golf-scheduler.log 2>&1
 ```
 
 ### Docker
@@ -103,67 +178,31 @@ Register-ScheduledTask -TaskName "GolfScheduler" -Action $action -Trigger $trigg
 docker-compose up -d
 ```
 
-The container runs the scheduler loop (every 6 hours) automatically.
-
 ---
 
 ## Project Structure
 
 ```
 GolfScheduler/
+├── schedule.json         # Configurable booking schedule
 ├── src/
-│   ├── index.js       # CLI entry point (commander)
-│   ├── config.js      # Environment config loader
-│   ├── db.js          # SQLite state tracking
-│   ├── scheduler.js   # Date/slot computation
-│   ├── booking.js     # Booking orchestrator (retry logic)
-│   ├── site.js        # Playwright browser automation
-│   ├── web.js         # Express calendar web view
-│   ├── notify.js      # Alert/notification module
-│   └── logger.js      # Winston logging
-├── screenshots/       # Booking confirmation screenshots
-├── data/              # SQLite database (auto-created)
-├── .env.example       # Template for credentials
+│   ├── index.js          # CLI entry point (commander)
+│   ├── config.js         # Environment + schedule config loader
+│   ├── db.js             # SQLite state tracking (sql.js)
+│   ├── scheduler.js      # Date/slot computation
+│   ├── booking.js        # Booking orchestrator (two-pass strategy)
+│   ├── site.js           # Playwright browser automation
+│   ├── web.js            # Express calendar web view
+│   ├── notify.js         # Alert/notification module
+│   └── logger.js         # Winston logging
+├── setup-scheduler.ps1   # Windows Task Scheduler setup script
+├── screenshots/          # Booking confirmation screenshots
+├── data/                 # SQLite database (auto-created)
+├── .env.example          # Template for credentials
 ├── Dockerfile
 ├── docker-compose.yml
-├── package.json
-└── README.md
+└── package.json
 ```
-
----
-
-## How to Test
-
-### 1. Dry run (safest)
-
-```bash
-npm run dry-run
-```
-
-Shows all dates/times that would be booked without touching the site.
-
-### 2. Init + Status
-
-```bash
-npm run init
-npm run status
-```
-
-Creates the database with all upcoming slots and shows the schedule.
-
-### 3. Single booking test
-
-Edit `.env` to reduce `BOOKING_HORIZON_DAYS=1`, then:
-
-```bash
-npm run book
-```
-
-Watch the console output. Check `screenshots/` for captured pages.
-
-### 4. Verify in browser
-
-After a booking run, log into https://fort-walton-member.book.teeitup.golf manually and verify your tee times appear.
 
 ---
 
@@ -171,44 +210,16 @@ After a booking run, log into https://fort-walton-member.book.teeitup.golf manua
 
 The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adjust:
 
-### Login form changed?
-
-Edit `src/site.js` → `login()` method:
-- Update `emailSelectors` array with new input field selectors
-- Update `passwordSelectors` array
-- Update `submitSelectors` array
-- Check `_findLoginFrame()` if login moves into/out of an iframe
-
-### Course selector changed?
-
-Edit `src/site.js` → `selectCourse()` method:
-- Update `courseSelectors` for dropdown-style selectors
-- Update the tab/button selectors for tab-style UI
-
-### Tee time display changed?
-
-Edit `src/site.js` → `getAvailableTeeTimes()` method:
-- Update `teeTimeSelectors` array with new CSS classes
-- Check `_extractTime()` if time format changes
-
-### Booking button changed?
-
-Edit `src/site.js` → `bookSlot()` method:
-- Update `bookSelectors` array
-- Update `_handleCheckout()` selectors if checkout flow changes
-
-### Course IDs changed?
-
-Edit `src/config.js` → `site.courses`:
-- Update Pines and Oaks IDs
-
-### API base URL changed?
-
-Edit `src/config.js` → `site.apiBase` and `site.memberUrl`
-
-### Player count control changed?
-
-Edit `src/site.js` → `_setPlayerCount()` method
+| What changed | Where to fix |
+|-------------|-------------|
+| Login form | `src/site.js` → `login()` — update email/password/submit selectors |
+| Login iframe | `src/site.js` → `_findLoginFrame()` |
+| Course selector | `src/site.js` → `selectCourse()` |
+| Tee time display | `src/site.js` → `getAvailableTeeTimes()` and `_extractTime()` |
+| Booking modal | `src/site.js` → `bookSlot()` and `_setPlayerCount()` |
+| Checkout flow | `src/site.js` → `completeCheckout()` — terms checkbox and purchase button |
+| Course IDs | `src/config.js` → `site.courses` |
+| Site URLs | `src/config.js` → `site.memberUrl` and `site.apiBase` |
 
 ---
 
@@ -226,7 +237,8 @@ Edit `src/site.js` → `_setPlayerCount()` method
 | Problem | Solution |
 |---------|----------|
 | `GOLF_EMAIL and GOLF_PASSWORD required` | Copy `.env.example` to `.env` and fill in credentials |
-| Login fails | Check credentials; site may have changed login flow — see "What to Change" |
+| `schedule.json not found` | Create `schedule.json` in the project root (see Configure schedule above) |
+| Login fails | Check credentials; site may have changed login flow — see table above |
 | No tee times found | Check screenshots in `./screenshots/`; the date may not have slots open yet |
 | `sql.js` issues | Uses pure-JS SQLite — no native build needed |
 | Playwright browser missing | Run `npx playwright install chromium` |
