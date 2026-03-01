@@ -376,13 +376,15 @@ class SiteAutomation {
   }
 
   /**
-   * Select the course. Returns the courseId actually selected.
-   * Tries Pines first, falls back to Oaks.
+   * Select a specific course by name. Returns the courseId actually selected.
+   * @param {string} courseName - 'Pines' or 'Oaks'
    */
-  async selectCourse() {
-    logger.info('Selecting course (Pines preferred)...');
+  async selectCourse(courseName = 'Pines') {
+    const target = courseName === 'Oaks' ? COURSES.oaks : COURSES.pines;
+    const targetRegex = new RegExp(courseName, 'i');
+    logger.info(`Selecting course: ${courseName}...`);
 
-    // Look for course selector dropdown or tabs
+    // Look for course selector dropdown
     const courseSelectors = [
       'select[name*="course" i]',
       'select[id*="course" i]',
@@ -391,34 +393,21 @@ class SiteAutomation {
       '[data-testid*="course" i]',
     ];
 
-    // Try dropdown first
     for (const sel of courseSelectors) {
       try {
         const dropdown = await this.page.$(sel);
         if (dropdown) {
-          // Try selecting Pines
           try {
-            await dropdown.selectOption({ label: /pines/i });
-            logger.info('Selected Pines course via dropdown');
-            return COURSES.pines.id;
+            await dropdown.selectOption({ label: targetRegex });
+            logger.info(`Selected ${courseName} course via dropdown`);
+            return target.id;
           } catch {
-            // Try by value
             try {
-              await dropdown.selectOption(COURSES.pines.id);
-              logger.info('Selected Pines course via dropdown (by value)');
-              return COURSES.pines.id;
+              await dropdown.selectOption(target.id);
+              logger.info(`Selected ${courseName} course via dropdown (by value)`);
+              return target.id;
             } catch {
-              // Pines not available, try Oaks
-              logger.warn('Pines not available in dropdown, trying Oaks...');
-              try {
-                await dropdown.selectOption({ label: /oaks/i });
-                logger.info('Selected Oaks course (fallback)');
-                return COURSES.oaks.id;
-              } catch {
-                await dropdown.selectOption(COURSES.oaks.id);
-                logger.info('Selected Oaks course (fallback, by value)');
-                return COURSES.oaks.id;
-              }
+              logger.warn(`${courseName} not available in dropdown`);
             }
           }
         }
@@ -428,30 +417,21 @@ class SiteAutomation {
     }
 
     // Try filter button-based course selector (sidebar checkboxes/buttons)
-    const pinesFilter = await this.page.$('button:has-text("Pines Course"), button:has-text("Pines"), a:has-text("Pines"), [class*="tab"]:has-text("Pines")');
-    if (pinesFilter && await pinesFilter.isVisible()) {
-      // Check if already selected (might have active class)
-      const isActive = await pinesFilter.evaluate(el => el.classList.contains('active') || el.getAttribute('aria-pressed') === 'true' || el.style.backgroundColor !== '');
+    const filterSel = `button:has-text("${courseName} Course"), button:has-text("${courseName}"), a:has-text("${courseName}"), [class*="tab"]:has-text("${courseName}")`;
+    const filter = await this.page.$(filterSel);
+    if (filter && await filter.isVisible()) {
+      const isActive = await filter.evaluate(el => el.classList.contains('active') || el.getAttribute('aria-pressed') === 'true' || el.style.backgroundColor !== '');
       if (!isActive) {
-        await pinesFilter.click();
+        await filter.click();
         await this.page.waitForTimeout(2000);
       }
-      logger.info('Selected Pines course via filter');
-      return COURSES.pines.id;
-    }
-
-    // Try Oaks fallback
-    const oaksFilter = await this.page.$('button:has-text("Oaks Course"), button:has-text("Oaks"), a:has-text("Oaks"), [class*="tab"]:has-text("Oaks")');
-    if (oaksFilter && await oaksFilter.isVisible()) {
-      await oaksFilter.click();
-      await this.page.waitForTimeout(2000);
-      logger.warn('Pines filter not found, selected Oaks (fallback)');
-      return COURSES.oaks.id;
+      logger.info(`Selected ${courseName} course via filter`);
+      return target.id;
     }
 
     // Course may already be selected via URL parameter
-    logger.info('No course selector found — course may be set via URL');
-    return COURSES.pines.id;
+    logger.info(`No course selector found — ${courseName} may be set via URL`);
+    return target.id;
   }
 
   /**

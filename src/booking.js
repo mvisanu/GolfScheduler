@@ -109,139 +109,100 @@ class BookingEngine {
     const baseEnd   = slots[0].window_end   || slots[0].target_time;
 
     const preferred = slots[0].course || 'Pines';
-    const allCourses = [
-      { id: config.site.courses.pines.id, name: 'Pines' },
-      { id: config.site.courses.oaks.id,  name: 'Oaks'  },
-    ];
-    const coursesToTry = [
-      allCourses.find(c => c.name === preferred),
-      allCourses.find(c => c.name !== preferred),
-    ];
+    const other = preferred === 'Pines' ? 'Oaks' : 'Pines';
 
-    // Try original window, then +1 hour if nothing available on either course
-    const windows = [
-      { start: baseStart,                       end: baseEnd                       },
-      { start: this._shiftTime(baseStart, 60),  end: this._shiftTime(baseEnd, 60)  },
+    // Explicit 4-step fallback order:
+    // 1. Preferred course at original time window
+    // 2. Other course at original time window
+    // 3. Preferred course at +1 hour window
+    // 4. Other course at +1 hour window
+    const attempts = [
+      { course: preferred, start: baseStart,                      end: baseEnd },
+      { course: other,     start: baseStart,                      end: baseEnd },
+      { course: preferred, start: this._shiftTime(baseStart, 60), end: this._shiftTime(baseEnd, 60) },
+      { course: other,     start: this._shiftTime(baseStart, 60), end: this._shiftTime(baseEnd, 60) },
     ];
 
     const totalSlots = slots.length;
     const cumulative = { booked: 0, failed: 0, partial: 0 };
 
-    for (const [i, win] of windows.entries()) {
-      if (i > 0) {
-        logger.info(`Retrying +1 hour window: ${win.start}-${win.end} (${slots.length} slots remaining)`);
-      }
+    for (const [i, attempt] of attempts.entries()) {
+      if (slots.length === 0) break;
 
-      const { result, anyFound } = await this._tryWindow(slots, date, dayLabel, win.start, win.end, coursesToTry);
+      const label = `${attempt.course} ${attempt.start}-${attempt.end}`;
+      logger.info(`Attempt ${i + 1}/4: ${label} (${slots.length} slots needed)`);
 
-      if (anyFound) {
+      const result = await this._tryCourse(slots, date, dayLabel, attempt.course, attempt.start, attempt.end);
+
+      if (result.booked > 0) {
         cumulative.booked += result.booked;
-
-        if (result.booked === slots.length) {
-          // All remaining slots booked in this window
+        // Filter out booked slots for remaining attempts
+        slots = slots.filter(s => !result._bookedSlotIds || !result._bookedSlotIds.has(s.id));
+        if (slots.length === 0) {
+          logger.info(`All slots booked on ${label}`);
           break;
-        } else if (result.booked > 0 && i < windows.length - 1) {
-          // Partial success — filter out booked slots and try next window
-          logger.info(`Partial booking (${result.booked}/${slots.length}) in ${win.start}-${win.end} — trying +1 hour for remaining slots`);
-          slots = slots.filter(s => !result._bookedSlotIds || !result._bookedSlotIds.has(s.id));
-          continue;
-        } else if (result.booked === 0 && i < windows.length - 1) {
-          // All failed — try next window with same slots
-          logger.info(`Booking failed in ${win.start}-${win.end} — trying +1 hour window`);
-          continue;
         }
-        // Last window — fall through to final reporting
-        break;
+        logger.info(`${result.booked} slot(s) booked on ${label}, ${slots.length} remaining`);
+      } else if (result.slotsFound) {
+        logger.warn(`Slots found on ${label} but booking failed — trying next fallback`);
+      } else {
+        logger.warn(`No available slots on ${label} — trying next fallback`);
       }
-      // No slots found in this window — loop to try next window
     }
 
     // Final reporting
     cumulative.failed = totalSlots - cumulative.booked;
 
     if (cumulative.booked === totalSlots) {
-      notify.alertSuccess({ date, dayLabel, slots: cumulative.booked, course: coursesToTry[0].name });
+      notify.alertSuccess({ date, dayLabel, slots: cumulative.booked, course: preferred });
     } else if (cumulative.booked > 0) {
       notify.alertPartialBooking({ date, dayLabel, bookedSlots: cumulative.booked, totalSlots });
     } else {
-      // Mark any remaining un-booked slots as failed
-      const lastWin = windows[windows.length - 1];
       for (const slot of slots) {
-        await db.markFailed(slot.id, `No slots in ${baseStart}-${baseEnd} or ${lastWin.start}-${lastWin.end} on either course`);
+        await db.markFailed(slot.id, `No slots on ${preferred} or ${other} in ${baseStart}-${baseEnd} or +1hr`);
       }
-      notify.alertFailure({ date, dayLabel, error: `No slots available in original or +1hr window on either course` });
+      notify.alertFailure({ date, dayLabel, error: `No slots available on either course in original or +1hr window` });
     }
 
     return cumulative;
   }
 
   /**
-   * Try to book `slots` within a specific time window across the given courses.
-   * Returns { result, anyFound } where anyFound=true means the site had slots in this window
-   * (so we should commit to this result and not retry with a different window).
+   * Try to book slots on a single course within a specific time window.
+   * First tries consecutive slots, then falls back to individual slots.
+   * Returns { booked, failed, slotsFound, _bookedSlotIds }
    */
-  async _tryWindow(slots, date, dayLabel, windowStart, windowEnd, coursesToTry) {
+  async _tryCourse(slots, date, dayLabel, courseName, windowStart, windowEnd) {
+    const courseId = courseName === 'Oaks' ? config.site.courses.oaks.id : config.site.courses.pines.id;
     const slotsNeeded = slots.length;
 
-    // Pass 1: consecutive slots (ideal)
-    for (const course of coursesToTry) {
-      logger.info(`Trying ${course.name} for ${date} consecutive in ${windowStart}-${windowEnd}...`);
-      await this.site.navigateToBooking(course.id, date);
-      await this.site.selectCourse();
-      await this.site.selectDate(date);
+    await this.site.navigateToBooking(courseId, date);
+    await this.site.selectCourse(courseName);
+    await this.site.selectDate(date);
 
-      const teeTimes = await this.site.getAvailableTeeTimes();
-      if (teeTimes.length === 0) {
-        logger.warn(`No tee times on ${course.name} for ${date}`);
-        continue;
-      }
-
-      const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
-      if (consecutive.length > 0) {
-        const result = await this._bookSlots(consecutive, slots, date, dayLabel, course.name);
-        return { result, anyFound: true };
-      }
-      logger.warn(`No ${slotsNeeded} consecutive slots in ${windowStart}-${windowEnd} on ${course.name}`);
+    const teeTimes = await this.site.getAvailableTeeTimes();
+    if (teeTimes.length === 0) {
+      logger.warn(`No tee times on ${courseName} for ${date}`);
+      return { booked: 0, failed: 0, slotsFound: false, _bookedSlotIds: new Set() };
     }
 
-    // Pass 2: individual slots
-    const remainingSlots = [...slots];
-    const result = { booked: 0, failed: 0, partial: 0, _bookedSlotIds: new Set() };
-    let anyFound = false;
-
-    for (const course of coursesToTry) {
-      if (remainingSlots.length === 0) break;
-
-      logger.info(`Trying ${course.name} individual slots in ${windowStart}-${windowEnd}...`);
-      await this.site.navigateToBooking(course.id, date);
-      await this.site.selectCourse();
-      await this.site.selectDate(date);
-
-      const teeTimes = await this.site.getAvailableTeeTimes();
-      const available = this.site.findSlotsInWindow(teeTimes, windowStart, windowEnd, remainingSlots.length);
-
-      if (available.length === 0) {
-        logger.warn(`No slots in ${windowStart}-${windowEnd} on ${course.name}`);
-        continue;
-      }
-
-      anyFound = true;
-      logger.info(`Found ${available.length} slots on ${course.name}: ${available.map(t => t.time).join(', ')}`);
-      const booked = await this._bookSlots(available, remainingSlots.splice(0, available.length), date, dayLabel, course.name);
-      result.booked += booked.booked;
-      result.failed += booked.failed;
-      result.partial += booked.partial;
-      for (const id of booked._bookedSlotIds) result._bookedSlotIds.add(id);
+    // Try consecutive slots first (ideal for group play)
+    const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
+    if (consecutive.length > 0) {
+      const result = await this._bookSlots(consecutive, slots, date, dayLabel, courseName);
+      return { ...result, slotsFound: true };
     }
 
-    if (!anyFound) return { result, anyFound: false };
-
-    // Mark whatever couldn't be filled from the available slots
-    for (const slot of remainingSlots) {
-      await db.markFailed(slot.id, `No available slots in ${windowStart}-${windowEnd} on either course`);
-      result.failed++;
+    // Fall back to individual slots in the window
+    const available = this.site.findSlotsInWindow(teeTimes, windowStart, windowEnd, slotsNeeded);
+    if (available.length === 0) {
+      logger.warn(`No slots in ${windowStart}-${windowEnd} on ${courseName}`);
+      return { booked: 0, failed: 0, slotsFound: false, _bookedSlotIds: new Set() };
     }
-    return { result, anyFound: true };
+
+    logger.info(`Found ${available.length} individual slots on ${courseName}: ${available.map(t => t.time).join(', ')}`);
+    const result = await this._bookSlots(available, slots.slice(0, available.length), date, dayLabel, courseName);
+    return { ...result, slotsFound: true };
   }
 
   /**

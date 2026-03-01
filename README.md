@@ -9,9 +9,11 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 ## Features
 
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
-- **Two-pass booking strategy:** consecutive slots first, then individual fallback
-- **Course fallback:** tries preferred course (Pines/Oaks), then the other
+- **Existing reservation check** — checks the site's Reservations page before booking; skips slots already booked (prevents double-booking across runs or manual bookings)
+- **4-step course/time fallback:** Preferred course → Other course → Preferred +1hr → Other +1hr
+- **Two-pass slot strategy:** consecutive slots first, then individual fallback
 - **Individual checkout per slot:** Book Now → 4 golfers → Add to Cart → Agree to Terms → Complete Your Purchase
+- **Cart cleanup** — clears stale cart items after login to avoid "cart limit" errors
 - **Calendar web view** at http://localhost:3000 with color-coded booking status
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
 - **Screenshot capture** at every booking step for verification
@@ -125,11 +127,26 @@ Opens a calendar view at **http://localhost:3000** showing:
 
 ## Booking Strategy
 
-The bot uses a two-pass approach for each day:
+### Pre-booking check
 
-1. **Pass 1 — Consecutive slots:** Tries to find N consecutive tee times within the time window on the preferred course. If not found, tries the other course.
+Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. Any slot that matches an existing reservation (within ±15 minutes) is marked as `confirmed` and skipped. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
 
-2. **Pass 2 — Individual slots:** If no consecutive slots exist on either course, books any available individual slots within the window to maximize the number of golfers booked. Tries both courses.
+### 4-step course and time fallback
+
+For each scheduled day, the bot tries up to 4 combinations in order:
+
+| Step | Course | Time Window |
+|------|--------|-------------|
+| 1 | Preferred (from schedule) | Original window |
+| 2 | Other course | Original window |
+| 3 | Preferred | +1 hour |
+| 4 | Other course | +1 hour |
+
+At each step, the bot first looks for **consecutive** tee times (ideal for group play). If not enough consecutive slots exist, it falls back to **individual** slots within the window.
+
+Once all needed slots are booked, remaining steps are skipped. If some slots are booked but not all, only the remaining slots carry forward to the next step.
+
+### Per-slot checkout
 
 Each tee time is checked out individually:
 - Click **Book Now** on the tee time
@@ -190,7 +207,7 @@ GolfScheduler/
 │   ├── config.js         # Environment + schedule config loader
 │   ├── db.js             # SQLite state tracking (sql.js)
 │   ├── scheduler.js      # Date/slot computation
-│   ├── booking.js        # Booking orchestrator (two-pass strategy)
+│   ├── booking.js        # Booking orchestrator (4-step fallback)
 │   ├── site.js           # Playwright browser automation
 │   ├── web.js            # Express calendar web view
 │   ├── notify.js         # Alert/notification module
@@ -227,7 +244,7 @@ The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adj
 
 - Credentials are **never hardcoded** — always loaded from `.env`
 - CAPTCHA and security blocks are **detected, not bypassed** — the bot stops and alerts
-- Double-bookings are **prevented by SQLite** (unique constraint on date + time + slot)
+- Double-bookings are **prevented** by SQLite unique constraints AND pre-booking reservation check
 - Retry limit is **3 attempts** per slot (configurable in config.js)
 
 ---
