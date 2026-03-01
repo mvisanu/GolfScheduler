@@ -700,8 +700,12 @@ class SiteAutomation {
       const cartBtns = await this.page.$$('button');
       for (const btn of cartBtns) {
         try {
-          const text = await btn.evaluate(el => el.textContent.trim());
-          if (text === 'ADD TO CART' || text === 'Add to Cart' || text === 'Add To Cart') {
+          const text = await btn.evaluate(el => {
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('svg, [aria-hidden="true"], [class*="Icon"]').forEach(n => n.remove());
+            return clone.textContent.trim().toUpperCase();
+          });
+          if (text === 'ADD TO CART') {
             await btn.evaluate(el => el.click());
             logger.info('Clicked "ADD TO CART"');
             addedToCart = true;
@@ -730,21 +734,27 @@ class SiteAutomation {
     }
   }
 
+  /**
+   * Set the player count in the booking modal. Tries the requested count first,
+   * then falls back to lower counts if the button is disabled (e.g. limited spots).
+   * Returns the actual count selected.
+   */
   async _setPlayerCount(count) {
     // TeeItUp uses numbered buttons (1, 2, 3, 4) under "Select Number of Golfers"
     // IMPORTANT: Must scope to the booking modal to avoid clicking calendar day buttons
 
-    // Find all buttons and look for one with exact text matching the count,
-    // that is inside the booking modal (near "Select Number of Golfers" or "Select Rate")
+    // Build a map of modal golfer buttons keyed by their number
     const allButtons = await this.page.$$('button');
+    const modalButtons = new Map(); // number → button handle
+
     for (const btn of allButtons) {
       try {
-        const info = await btn.evaluate((el, targetCount) => {
+        const info = await btn.evaluate(el => {
           const text = el.textContent.trim();
-          if (text !== String(targetCount)) return null;
+          const num = parseInt(text, 10);
+          if (isNaN(num) || num < 1 || num > 4 || String(num) !== text) return null;
 
           // Walk up to check if this button is inside the booking modal
-          // The modal contains "Select Number of Golfers" or "Select Rate" or "ADD TO CART"
           let node = el.parentElement;
           for (let i = 0; i < 10; i++) {
             if (!node) break;
@@ -752,24 +762,52 @@ class SiteAutomation {
             if (parentText.includes('Select Number of Golfers') ||
                 parentText.includes('Select Rate') ||
                 parentText.includes('ADD TO CART')) {
-              return { text, inModal: true };
+              const isDisabled = el.disabled ||
+                el.getAttribute('aria-disabled') === 'true' ||
+                getComputedStyle(el).pointerEvents === 'none' ||
+                parseFloat(getComputedStyle(el).opacity) < 0.5;
+              return { num, inModal: true, disabled: isDisabled };
             }
             node = node.parentElement;
           }
           return null;
-        }, count);
+        });
 
         if (info && info.inModal) {
-          await btn.evaluate(el => el.click());
-          logger.info(`Set ${count} golfers via modal button`);
-          return;
+          modalButtons.set(info.num, { handle: btn, disabled: info.disabled });
         }
       } catch {
         // Skip
       }
     }
 
-    logger.warn(`Could not find golfer count button for ${count} — proceeding with default`);
+    if (modalButtons.size === 0) {
+      logger.warn('No golfer count buttons found in modal — proceeding with default');
+      return count;
+    }
+
+    // Try requested count, then fall back to lower counts
+    const tryOrder = [];
+    for (let n = count; n >= 1; n--) tryOrder.push(n);
+
+    for (const n of tryOrder) {
+      const entry = modalButtons.get(n);
+      if (!entry) continue;
+      if (entry.disabled) {
+        logger.info(`Golfer button ${n} is disabled — trying lower count`);
+        continue;
+      }
+      await entry.handle.evaluate(el => el.click());
+      if (n < count) {
+        logger.warn(`Set ${n} golfers (wanted ${count} but higher counts disabled)`);
+      } else {
+        logger.info(`Set ${count} golfers via modal button`);
+      }
+      return n;
+    }
+
+    logger.warn(`All golfer count buttons disabled — proceeding with default`);
+    return 1;
   }
 
   async _extractConfirmation() {
@@ -798,56 +836,241 @@ class SiteAutomation {
   }
 
   /**
-   * Complete checkout after a tee time has been added to the cart.
-   * Flow: Cart icon → Terms checkbox → Complete Your Purchase
+   * Clear any stale items from the shopping cart to avoid "Cart items limit exceeded" errors.
+   * Should be called once after login, before processing any booking groups.
    */
-  async completeCheckout() {
-    logger.info('Completing checkout...');
+  async clearCart() {
+    logger.info('Clearing stale cart items...');
 
-    // After ADD TO CART, the site may show a cart icon/badge or redirect to checkout.
-    // Look for cart icon with item count, or a checkout/cart link in the nav.
-    await this.page.waitForTimeout(2000);
-    await this.screenshot('checkout-before-nav');
-
-    // Try to find and click on the cart icon/link to go to checkout page
-    // Look for cart indicators (badge, icon, nav link)
-    const cartNavSelectors = [
-      'a[href*="cart"]',
-      'a[href*="checkout"]',
-      '[class*="cart-icon"]',
-      '[class*="cartIcon"]',
-      '[class*="shopping-cart"]',
-      '[aria-label*="cart" i]',
-      '[aria-label*="Cart" i]',
-      'button:has-text("View Cart")',
-      'button:has-text("Go to Cart")',
-      'a:has-text("View Cart")',
-      'a:has-text("Checkout")',
+    // Click the cart icon to open the cart panel
+    let cartOpened = false;
+    const cartSelectors = [
+      'header [aria-label*="cart" i]',
+      'header button[aria-label*="cart" i]',
+      'nav [aria-label*="cart" i]',
+      '[class*="header"] [aria-label*="cart" i]',
+      'button[aria-label="cart"]',
+      'button[aria-label="Cart"]',
     ];
 
-    let navigatedToCart = false;
-    for (const sel of cartNavSelectors) {
+    for (const sel of cartSelectors) {
       try {
         const el = await this.page.$(sel);
         if (el && await el.isVisible()) {
           await el.evaluate(e => e.click());
-          logger.info(`Navigated to cart via: ${sel}`);
-          navigatedToCart = true;
+          logger.info(`Opened cart via: ${sel}`);
+          cartOpened = true;
+          await this.page.waitForTimeout(2000);
+          break;
+        }
+      } catch { /* try next */ }
+    }
+
+    if (!cartOpened) {
+      // Positional scan for cart icon in top-right
+      cartOpened = await this.page.evaluate(() => {
+        const candidates = document.querySelectorAll('svg, [class*="cart" i], [class*="Cart" i], [class*="badge" i]');
+        for (const el of candidates) {
+          const rect = el.getBoundingClientRect();
+          if (rect.left > window.innerWidth * 0.6 && rect.top < window.innerHeight * 0.15 && rect.width > 0) {
+            const clickTarget = el.closest('button') || el.closest('a') || el;
+            clickTarget.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (cartOpened) {
+        logger.info('Opened cart via positional scan');
+        await this.page.waitForTimeout(2000);
+      }
+    }
+
+    if (!cartOpened) {
+      logger.info('Could not find cart icon — cart likely empty');
+      return;
+    }
+
+    await this.screenshot('clear-cart-opened');
+
+    // Remove items one at a time — look for delete/remove buttons or three-dot menus
+    let itemsRemoved = 0;
+    const maxItems = 10; // safety limit
+
+    for (let attempt = 0; attempt < maxItems; attempt++) {
+      // Try clicking a delete/remove/trash icon on a cart item
+      const removed = await this.page.evaluate(() => {
+        // Look for three-dot/more menus (⋮) inside the cart panel
+        const moreButtons = document.querySelectorAll(
+          '[aria-label*="more" i], [aria-label*="delete" i], [aria-label*="remove" i], ' +
+          '[class*="delete" i], [class*="remove" i], [class*="trash" i], ' +
+          'button[aria-label*="More" i]'
+        );
+        for (const btn of moreButtons) {
+          if (btn.offsetParent !== null) { // visible
+            btn.click();
+            return 'clicked-action-button';
+          }
+        }
+
+        // Look for an "EDIT CART" or "Remove" link/button
+        const buttons = document.querySelectorAll('button, a');
+        for (const btn of buttons) {
+          const text = btn.textContent.trim().toUpperCase();
+          if ((text === 'REMOVE' || text === 'DELETE' || text.includes('REMOVE ITEM')) && btn.offsetParent !== null) {
+            btn.click();
+            return 'clicked-remove';
+          }
+        }
+        return null;
+      });
+
+      if (!removed) {
+        // No more removable items found
+        break;
+      }
+
+      logger.info(`Cart item action: ${removed}`);
+      await this.page.waitForTimeout(1500);
+
+      // If we clicked a three-dot menu, a dropdown appears — click Remove/Delete in the dropdown
+      if (removed === 'clicked-action-button') {
+        const dropdownRemoved = await this.page.evaluate(() => {
+          // MUI menu items or popover buttons
+          const menuItems = document.querySelectorAll(
+            '[role="menuitem"], [class*="MenuItem"], [class*="menuItem"], ' +
+            '.MuiMenuItem-root, [role="menu"] button, [class*="popover"] button'
+          );
+          for (const item of menuItems) {
+            const text = item.textContent.trim().toUpperCase();
+            if (text === 'REMOVE' || text === 'DELETE' || text.includes('REMOVE')) {
+              item.click();
+              return true;
+            }
+          }
+          return false;
+        });
+        if (dropdownRemoved) {
+          logger.info('Clicked Remove in dropdown menu');
+          await this.page.waitForTimeout(1500);
+        } else {
+          // Dismiss the menu and try the next item
+          await this.page.keyboard.press('Escape');
+          await this.page.waitForTimeout(500);
+        }
+      }
+
+      itemsRemoved++;
+    }
+
+    if (itemsRemoved > 0) {
+      logger.info(`Removed ${itemsRemoved} stale cart item(s)`);
+      await this.screenshot('clear-cart-done');
+    } else {
+      logger.info('Cart was empty — nothing to clear');
+    }
+
+    // Close the cart panel
+    await this._dismissModals();
+    await this.page.waitForTimeout(500);
+  }
+
+  /**
+   * Complete checkout after a tee time has been added to the cart.
+   * Flow: Cart icon (top-right) → Checkout button → Terms checkbox → COMPLETE YOUR PURCHASE
+   */
+  async completeCheckout() {
+    logger.info('Completing checkout...');
+    await this.page.waitForTimeout(2000);
+    await this.screenshot('checkout-before-cart');
+
+    // Step 1: Click the cart icon in the top-right header (next to the user's name)
+    let cartClicked = false;
+
+    // Try labeled/aria cart buttons in the header first
+    const headerCartSelectors = [
+      'header [aria-label*="cart" i]',
+      'header button[aria-label*="cart" i]',
+      'nav [aria-label*="cart" i]',
+      '[class*="header"] [aria-label*="cart" i]',
+      '[class*="navbar"] [aria-label*="cart" i]',
+      'header button svg[data-testid="ShoppingCartIcon"]',
+      '[class*="MuiBadge-root"] button',
+      'button[aria-label="cart"]',
+      'button[aria-label="Cart"]',
+      'a[href*="cart"]',
+      'a[href*="checkout"]',
+    ];
+
+    for (const sel of headerCartSelectors) {
+      try {
+        const el = await this.page.$(sel);
+        if (el && await el.isVisible()) {
+          await el.evaluate(e => e.click());
+          logger.info(`Clicked cart icon via: ${sel}`);
+          cartClicked = true;
+          await this.page.waitForTimeout(2000);
+          break;
+        }
+      } catch { /* try next */ }
+    }
+
+    if (!cartClicked) {
+      // Positional scan: find any SVG or cart-related element in the top-right area of the viewport
+      cartClicked = await this.page.evaluate(() => {
+        const candidates = document.querySelectorAll('svg, [class*="cart" i], [class*="Cart" i], [class*="badge" i]');
+        for (const el of candidates) {
+          const rect = el.getBoundingClientRect();
+          if (rect.left > window.innerWidth * 0.6 && rect.top < window.innerHeight * 0.15 && rect.width > 0) {
+            const clickTarget = el.closest('button') || el.closest('a') || el;
+            clickTarget.click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (cartClicked) {
+        logger.info('Clicked cart icon via top-right positional scan');
+        await this.page.waitForTimeout(2000);
+      } else {
+        logger.warn('Could not find cart icon — proceeding to look for Checkout button anyway');
+      }
+    }
+
+    await this.screenshot('checkout-after-cart-icon');
+
+    // Step 2: Click "Checkout" button that appears in the cart dropdown/panel
+    let navigatedToCheckout = false;
+    const checkoutBtnSelectors = [
+      'button:has-text("Checkout")',
+      'a:has-text("Checkout")',
+      'button:has-text("CHECKOUT")',
+      'a:has-text("CHECKOUT")',
+      'button:has-text("Proceed to Checkout")',
+      'a:has-text("Proceed to Checkout")',
+    ];
+
+    for (const sel of checkoutBtnSelectors) {
+      try {
+        const el = await this.page.$(sel);
+        if (el && await el.isVisible()) {
+          await el.evaluate(e => e.click());
+          logger.info(`Clicked checkout button via: ${sel}`);
+          navigatedToCheckout = true;
           await this.page.waitForTimeout(3000);
           break;
         }
       } catch { /* try next */ }
     }
 
-    if (!navigatedToCart) {
-      // Try navigating to checkout URL directly
+    if (!navigatedToCheckout) {
+      // Fallback: navigate to /checkout directly
       try {
-        const currentUrl = this.page.url();
-        const baseUrl = new URL(currentUrl).origin;
+        const baseUrl = new URL(this.page.url()).origin;
         await this.page.goto(`${baseUrl}/checkout`, { waitUntil: 'domcontentloaded', timeout: 15000 });
         await this.page.waitForTimeout(3000);
         logger.info('Navigated to /checkout directly');
-        navigatedToCart = true;
+        navigatedToCheckout = true;
       } catch {
         logger.warn('Could not navigate to checkout page');
       }
@@ -855,32 +1078,28 @@ class SiteAutomation {
 
     await this.screenshot('checkout-page');
 
-    // Step 2: Agree to Terms and Conditions
-    // Look specifically for Terms-related checkboxes (not just any checkbox)
+    // Step 3: Check "I agree to the Terms and Conditions" checkbox
     let termsChecked = false;
+    await this.page.waitForTimeout(1000);
 
-    // First try: find checkbox near "Terms" text
     const termsResult = await this.page.evaluate(() => {
-      // Find any element containing "Terms" or "I agree"
       const allElements = document.querySelectorAll('*');
       for (const el of allElements) {
         const text = el.textContent || '';
-        if ((text.includes('Terms') || text.includes('I agree')) && text.length < 200) {
-          // Look for a checkbox input nearby
+        if ((text.toLowerCase().includes('terms') || text.toLowerCase().includes('i agree')) && text.length < 300) {
           const checkbox = el.querySelector('input[type="checkbox"]') ||
                           el.closest('label')?.querySelector('input[type="checkbox"]');
           if (checkbox && !checkbox.checked) {
             checkbox.click();
-            return 'clicked-checkbox';
+            return 'clicked-terms-checkbox';
           }
-          // Maybe the element itself is clickable (label)
-          if (el.tagName === 'LABEL' || el.tagName === 'SPAN') {
+          if (el.tagName === 'LABEL') {
             el.click();
-            return 'clicked-label';
+            return 'clicked-terms-label';
           }
         }
       }
-      // Fallback: find any unchecked checkbox on the page
+      // Fallback: any unchecked checkbox on the page
       const checkboxes = document.querySelectorAll('input[type="checkbox"]');
       for (const cb of checkboxes) {
         if (!cb.checked) {
@@ -901,25 +1120,24 @@ class SiteAutomation {
 
     await this.screenshot('checkout-terms');
 
-    // Step 3: Click "Complete Your Purchase" button
-    // Search by exact text to avoid clicking wrong buttons (NOT "Book Now")
+    // Step 4: Click "COMPLETE YOUR PURCHASE" button
     const purchaseResult = await this.page.evaluate(() => {
       const buttons = document.querySelectorAll('button, input[type="submit"], a.btn, a.button');
       const purchaseTexts = [
-        'Complete Your Purchase',
-        'Complete Purchase',
-        'Complete Booking',
-        'Place Order',
-        'Confirm Purchase',
-        'Submit Order',
-        'Pay Now',
+        'COMPLETE YOUR PURCHASE',
+        'COMPLETE PURCHASE',
+        'COMPLETE BOOKING',
+        'PLACE ORDER',
+        'CONFIRM PURCHASE',
       ];
       for (const btn of buttons) {
-        const text = btn.textContent.trim();
+        const clone = btn.cloneNode(true);
+        clone.querySelectorAll('svg, [aria-hidden="true"], [class*="Icon"]').forEach(n => n.remove());
+        const text = clone.textContent.trim().toUpperCase();
         for (const target of purchaseTexts) {
           if (text.includes(target)) {
             btn.click();
-            return text;
+            return clone.textContent.trim();
           }
         }
       }
@@ -930,17 +1148,169 @@ class SiteAutomation {
       logger.info(`Clicked purchase button: "${purchaseResult}"`);
       await this.page.waitForTimeout(5000);
     } else {
-      logger.warn('Could not find "Complete Your Purchase" button — purchase may not have completed');
+      logger.warn('Could not find "COMPLETE YOUR PURCHASE" button');
     }
 
     const screenshotPath = await this.screenshot('checkout-complete');
     const confirmation = await this._extractConfirmation();
 
     return {
-      success: !!purchaseResult || termsChecked,
+      success: !!purchaseResult,
       confirmationNumber: confirmation || (purchaseResult ? 'CHECKOUT_COMPLETE' : null),
       screenshotPath,
     };
+  }
+
+  /**
+   * Check existing reservations on the site for a given date.
+   * Navigates to the reservations/my-tee-times page, extracts bookings
+   * matching the target date, and returns them.
+   * Returns array of { time, course, players, date }
+   */
+  async getExistingReservations(date) {
+    logger.info(`Checking existing reservations for ${date}...`);
+
+    const baseUrl = config.site.memberUrl;
+    let foundPage = false;
+
+    // Try direct URL patterns first
+    const urlPatterns = [
+      `${baseUrl}/reservations`,
+      `${baseUrl}/my-tee-times`,
+      `${baseUrl}/my-bookings`,
+      `${baseUrl}/upcoming`,
+    ];
+
+    for (const url of urlPatterns) {
+      try {
+        const response = await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        if (response && response.status() < 400) {
+          await this.page.waitForTimeout(3000);
+          // Verify we're on a reservations-like page (not redirected to home)
+          const pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 2000));
+          if (/reservat|my tee|my book|upcoming|booked/i.test(pageText)) {
+            logger.info(`Found reservations page at: ${url}`);
+            foundPage = true;
+            break;
+          }
+        }
+      } catch {
+        // Try next URL
+      }
+    }
+
+    // Fallback: try clicking nav links
+    if (!foundPage) {
+      // Navigate back to base first
+      try {
+        await this.page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await this.page.waitForTimeout(3000);
+      } catch { /* continue */ }
+
+      const navLabels = ['Reservations', 'My Tee Times', 'My Bookings', 'Upcoming', 'My Reservations'];
+      for (const label of navLabels) {
+        try {
+          const link = await this.page.$(`a:has-text("${label}"), button:has-text("${label}")`);
+          if (link && await link.isVisible()) {
+            await link.click();
+            await this.page.waitForTimeout(3000);
+            logger.info(`Clicked nav link: "${label}"`);
+            foundPage = true;
+            break;
+          }
+        } catch {
+          // Try next
+        }
+      }
+    }
+
+    if (!foundPage) {
+      logger.warn('Could not find reservations page — skipping reservation check');
+      return [];
+    }
+
+    await this.screenshot('reservations-page');
+
+    // Extract reservations from the page
+    const reservations = await this.page.evaluate((targetDate) => {
+      const results = [];
+      const body = document.body.innerText;
+
+      // Parse the target date for matching
+      const [year, month, day] = targetDate.split('-').map(Number);
+      const targetDateObj = new Date(year, month - 1, day);
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                          'July', 'August', 'September', 'October', 'November', 'December'];
+      const shortMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+      // Build date patterns to match on the page
+      const datePatterns = [
+        targetDate,                                                    // 2026-03-15
+        `${month}/${day}/${year}`,                                     // 3/15/2026
+        `${String(month).padStart(2,'0')}/${String(day).padStart(2,'0')}/${year}`, // 03/15/2026
+        `${monthNames[month-1]} ${day}`,                               // March 15
+        `${shortMonths[month-1]} ${day}`,                              // Mar 15
+        `${monthNames[month-1]} ${String(day).padStart(2,'0')}`,       // March 15
+        `${shortMonths[month-1]} ${String(day).padStart(2,'0')}`,      // Mar 15
+      ];
+
+      // Find card-like containers that represent individual reservations
+      // Look for elements containing both a time and a date reference
+      const cards = document.querySelectorAll(
+        '[class*="card" i], [class*="reservation" i], [class*="booking" i], ' +
+        '[class*="tee-time" i], [class*="teeTime" i], [class*="item" i], ' +
+        'tr, li, [role="listitem"], [class*="Card"]'
+      );
+
+      for (const card of cards) {
+        const text = card.textContent || '';
+        if (text.length > 1000 || text.length < 10) continue;
+
+        // Check if this card matches the target date
+        const matchesDate = datePatterns.some(p => text.includes(p));
+        if (!matchesDate) continue;
+
+        // Extract time
+        const timeMatch = text.match(/(\d{1,2}:\d{2})\s*(AM|PM|am|pm)/);
+        if (!timeMatch) continue;
+
+        let [, time, period] = timeMatch;
+        let [h, m] = time.split(':').map(Number);
+        if (period.toUpperCase() === 'PM' && h !== 12) h += 12;
+        if (period.toUpperCase() === 'AM' && h === 12) h = 0;
+        const time24 = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+        // Extract course name
+        let course = 'Unknown';
+        if (/pines/i.test(text)) course = 'Pines';
+        else if (/oaks/i.test(text)) course = 'Oaks';
+
+        // Extract player count
+        const playerMatch = text.match(/(\d)\s*(?:player|golfer)/i);
+        const players = playerMatch ? parseInt(playerMatch[1]) : 4;
+
+        results.push({ time: time24, course, players, date: targetDate });
+      }
+
+      // Deduplicate by time
+      const seen = new Set();
+      return results.filter(r => {
+        const key = `${r.time}-${r.course}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    }, date);
+
+    if (reservations.length > 0) {
+      const times = reservations.map(r => `${r.time} (${r.course})`).join(', ');
+      logger.info(`Found ${reservations.length} existing reservations for ${date}: ${times}`);
+    } else {
+      logger.info(`No existing reservations found for ${date}`);
+    }
+
+    return reservations;
   }
 
   async _handleCheckout(slotIndex) {
