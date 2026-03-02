@@ -82,11 +82,14 @@ app.get('/', async (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Golf Scheduler - Calendar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #2D2A26; line-height: 1.5; font-size: 16px; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #f5f5f5; color: #2D2A26; line-height: 1.5; font-size: 16px; }
     .header { background: #cb6301; color: white; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; }
-    .header h1 { font-size: 1.5rem; letter-spacing: 0.01em; }
+    .header h1 { font-family: 'Manrope', sans-serif; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
     .header .stats { font-size: 0.9rem; opacity: 0.9; }
     .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
     .legend { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -111,7 +114,7 @@ app.get('/', async (req, res) => {
     .chip-skipped { background: #9ca3af; display: none; }
     .chip-cancelled { background: #6b7280; text-decoration: line-through; }
     .month-nav { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; }
-    .month-nav h2 { font-size: 1.3rem; letter-spacing: 0.01em; }
+    .month-nav h2 { font-family: 'Manrope', sans-serif; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
     .month-nav button { background: #cb6301; color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
     .month-nav button:hover:not(:disabled) { background: #a84f00; }
     .month-nav button:disabled { opacity: 0.7; cursor: not-allowed; }
@@ -131,7 +134,7 @@ app.get('/', async (req, res) => {
     .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
     .modal-overlay.open { display: flex; }
     .modal-box { background: white; border-radius: 10px; padding: 28px; max-width: 420px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-    .modal-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; color: #111; letter-spacing: 0.01em; }
+    .modal-title { font-family: 'Manrope', sans-serif; font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; color: #111; letter-spacing: -0.01em; }
     .modal-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 8px; font-size: 0.9rem; margin-bottom: 18px; }
     .modal-label { color: #666; font-weight: 500; }
     .modal-value { color: #222; font-weight: 600; }
@@ -170,7 +173,7 @@ app.get('/', async (req, res) => {
     ${generateCalendarHTML(year, month, byDate)}
     ${generateCalendarHTML(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1, byDate, 'Book Now')}
 
-    <h2 style="margin-top:30px; margin-bottom:10px;">All Bookings</h2>
+    <h2 style="margin-top:30px; margin-bottom:10px; font-family:'Manrope',sans-serif; font-weight:700; letter-spacing:-0.02em;">All Bookings</h2>
     <table class="detail-table">
       <thead>
         <tr>
