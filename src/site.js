@@ -1657,98 +1657,201 @@ class SiteAutomation {
 
     await this.screenshot('reservations-page');
 
-    // Click "View Details" buttons to expand reservation details (date, time, golfers)
+    // Increase page length to 50 so we see more reservations per page
     try {
-      const detailButtons = await this.page.$$('button:has-text("View Details"), a:has-text("View Details"), button:has-text("View details"), a:has-text("View details")');
-      if (detailButtons.length > 0) {
-        logger.info(`Found ${detailButtons.length} "View Details" button(s) — clicking all`);
-        for (const btn of detailButtons) {
-          try {
-            if (await btn.isVisible()) {
-              await btn.evaluate(el => el.click());
-              await this.page.waitForTimeout(500);
+      await this.page.evaluate(() => {
+        // Find the Page Length select/dropdown and change it to 50
+        const selects = document.querySelectorAll('select');
+        for (const sel of selects) {
+          for (const opt of sel.options) {
+            if (opt.value === '50' || opt.text === '50') {
+              sel.value = '50';
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
             }
-          } catch { /* skip */ }
+          }
         }
-        await this.page.waitForTimeout(2000);
-        await this.screenshot('reservations-details-expanded');
-      }
-    } catch {
-      logger.debug('No View Details buttons found');
-    }
+        return false;
+      });
+      await this.page.waitForTimeout(1500);
+    } catch { /* dropdown may not support 50 */ }
 
-    // Extract reservations from the page (after expanding details)
-    const reservations = await this.page.evaluate((targetDate) => {
-      const results = [];
+    // Build date patterns once (passed into page context as plain array)
+    const [resYear, resMonth, resDay] = date.split('-').map(Number);
+    const _monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                         'July', 'August', 'September', 'October', 'November', 'December'];
+    const _shortMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const datePatterns = [
+      date,
+      `${resMonth}/${resDay}/${resYear}`,
+      `${String(resMonth).padStart(2,'0')}/${String(resDay).padStart(2,'0')}/${resYear}`,
+      `${_monthNames[resMonth-1]} ${resDay}`,
+      `${_shortMonths[resMonth-1]} ${resDay}`,
+      `${_monthNames[resMonth-1]} ${String(resDay).padStart(2,'0')}`,
+      `${_shortMonths[resMonth-1]} ${String(resDay).padStart(2,'0')}`,
+    ];
 
-      // Parse the target date for matching
-      const [year, month, day] = targetDate.split('-').map(Number);
-      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                          'July', 'August', 'September', 'October', 'November', 'December'];
-      const shortMonths = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    // Extract reservation details from the current page.
+    // Works on the list page (card selectors) and the detail page (full-body scan fallback).
+    const extractFromCurrentPage = async () => {
+      return await this.page.evaluate(({ targetDate, patterns }) => {
+        const results = [];
+        const seen = new Set();
 
-      // Build date patterns to match on the page
-      const datePatterns = [
-        targetDate,                                                    // 2026-03-15
-        `${month}/${day}/${year}`,                                     // 3/15/2026
-        `${String(month).padStart(2,'0')}/${String(day).padStart(2,'0')}/${year}`, // 03/15/2026
-        `${monthNames[month-1]} ${day}`,                               // March 15
-        `${shortMonths[month-1]} ${day}`,                              // Mar 15
-        `${monthNames[month-1]} ${String(day).padStart(2,'0')}`,       // March 15
-        `${shortMonths[month-1]} ${String(day).padStart(2,'0')}`,      // Mar 15
-      ];
+        function extractFromText(text) {
+          if (!patterns.some(p => text.includes(p))) return;
+          const timeMatch = text.match(/(\d{1,2}:\d{2})\s*(AM|PM|am|pm)/i);
+          if (!timeMatch) return;
+          let [, t, period] = timeMatch;
+          let [h, m] = t.split(':').map(Number);
+          if (period.toUpperCase() === 'PM' && h !== 12) h += 12;
+          if (period.toUpperCase() === 'AM' && h === 12) h = 0;
+          const time24 = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          const key = `${time24}-${text.slice(0, 30)}`;
+          if (seen.has(key)) return;
+          seen.add(key);
+          let course = 'Unknown';
+          if (/pines/i.test(text)) course = 'Pines';
+          else if (/oaks/i.test(text)) course = 'Oaks';
+          const playerMatch = text.match(/(\d)\s*(?:player|golfer)/i);
+          const players = playerMatch ? parseInt(playerMatch[1]) : 4;
+          // Match "Confirmation #Name|NUMBER" or "Reservation #NUMBER"
+          const resMatch = text.match(/(?:Confirmation|Reservation)\s*#\s*(?:[^|\n]+\|)?(\d+)/i);
+          const reservationNumber = resMatch ? resMatch[1] : null;
+          results.push({ time: time24, course, players, date: targetDate, reservationNumber });
+        }
 
-      // Find card-like containers that represent individual reservations
-      const cards = document.querySelectorAll(
-        '[class*="card" i], [class*="reservation" i], [class*="booking" i], ' +
-        '[class*="tee-time" i], [class*="teeTime" i], [class*="item" i], ' +
-        'tr, li, [role="listitem"], [class*="Card"]'
+        // Scan card-like elements (list page)
+        const selectors = [
+          '[role="dialog"]', '[class*="modal" i]',
+          '[class*="card" i]', '[class*="reservation" i]', '[class*="booking" i]',
+          '[class*="tee-time" i]', '[class*="teeTime" i]',
+          'tr', 'li', '[role="listitem"]', '[class*="Card"]',
+        ];
+        for (const sel of selectors) {
+          for (const el of document.querySelectorAll(sel)) {
+            const text = el.textContent || '';
+            if (text.length < 10 || text.length > 6000) continue;
+            extractFromText(text);
+          }
+        }
+
+        // Fallback: full body scan (for detail page after VIEW DETAILS navigation)
+        if (results.length === 0) {
+          const bodyText = document.body.innerText || '';
+          if (patterns.some(p => bodyText.includes(p))) {
+            extractFromText(bodyText);
+          }
+        }
+
+        // Deduplicate by time+course
+        const deduped = new Set();
+        return results.filter(r => {
+          const k = `${r.time}-${r.course}`;
+          if (deduped.has(k)) return false;
+          deduped.add(k);
+          return true;
+        });
+      }, { targetDate: date, patterns: datePatterns });
+    };
+
+    // Wait for reservation cards to finish loading (not just the page chrome/spinner)
+    try {
+      await this.page.waitForFunction(
+        () => /VIEW DETAILS|View Details/i.test(document.body.innerText || ''),
+        { timeout: 12000, polling: 300 }
+      );
+    } catch { /* might be empty list or different page structure */ }
+    await this.page.waitForTimeout(300);
+
+    const MAX_PAGES = 20;
+    const reservations = [];
+    let lastPageHadDate = false;
+
+    for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++) {
+      // Check if the target date is visible anywhere on this page (collapsed cards)
+      const dateOnPage = await this.page.evaluate(
+        (patterns) => patterns.some(p => (document.body.innerText || '').includes(p)),
+        datePatterns
       );
 
-      for (const card of cards) {
-        const text = card.textContent || '';
-        if (text.length > 1500 || text.length < 10) continue;
+      if (dateOnPage) {
+        lastPageHadDate = true;
+        logger.info(`Page ${pageNum + 1}: found date ${date} — processing matching cards`);
 
-        // Check if this card matches the target date
-        const matchesDate = datePatterns.some(p => text.includes(p));
-        if (!matchesDate) continue;
+        // Process each matching card one at a time using a skip counter.
+        // Each VIEW DETAILS click navigates to a detail page (SPA), so we
+        // can only click one at a time, go back, then click the next one.
+        let processed = 0;
+        while (true) {
+          const clicked = await this.page.evaluate(({ patterns, skip }) => {
+            const cards = [...document.querySelectorAll('[class*="Card"], [class*="card"], li, [role="listitem"]')];
+            const matching = cards.filter(c => {
+              const t = c.textContent || '';
+              return t.length > 10 && t.length < 3000 && patterns.some(p => t.includes(p));
+            });
+            if (matching.length <= skip) return false;
+            const btn = [...matching[skip].querySelectorAll('button')].find(
+              b => /view details/i.test(b.textContent || '')
+            );
+            if (btn) { btn.click(); return true; }
+            return false;
+          }, { patterns: datePatterns, skip: processed }).catch(() => false);
 
-        // Extract time (e.g., "12:10 PM")
-        const timeMatch = text.match(/(\d{1,2}:\d{2})\s*(AM|PM|am|pm)/);
-        if (!timeMatch) continue;
+          if (!clicked) break;
+          await this.page.waitForTimeout(2000);
 
-        let [, time, period] = timeMatch;
-        let [h, m] = time.split(':').map(Number);
-        if (period.toUpperCase() === 'PM' && h !== 12) h += 12;
-        if (period.toUpperCase() === 'AM' && h === 12) h = 0;
-        const time24 = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          const onDetailPage = await this.page.evaluate(
+            () => /CANCEL OR MODIFY|Reservation Details/i.test(document.body.innerText || '')
+          );
+          if (onDetailPage) {
+            await this.page.waitForTimeout(500);
+          }
 
-        // Extract course name
-        let course = 'Unknown';
-        if (/pines/i.test(text)) course = 'Pines';
-        else if (/oaks/i.test(text)) course = 'Oaks';
+          const found = await extractFromCurrentPage();
+          for (const r of found) {
+            if (!reservations.some(e => e.time === r.time && e.course === r.course)) {
+              reservations.push(r);
+            }
+          }
+          processed++;
 
-        // Extract player/golfer count
-        const playerMatch = text.match(/(\d)\s*(?:player|golfer)/i);
-        const players = playerMatch ? parseInt(playerMatch[1]) : 4;
-
-        // Extract reservation number if visible
-        const resMatch = text.match(/Reservation\s*#?\s*(\d+)/i);
-        const reservationNumber = resMatch ? resMatch[1] : null;
-
-        results.push({ time: time24, course, players, date: targetDate, reservationNumber });
+          if (onDetailPage) {
+            logger.debug(`Card ${processed}: extracted ${found.length} reservation(s) — going back`);
+            await this.page.goBack({ waitUntil: 'domcontentloaded' }).catch(async () => {
+              await this.page.evaluate(() => window.history.back());
+            });
+            await this.page.waitForTimeout(1500);
+            try {
+              await this.page.waitForFunction(
+                () => /VIEW DETAILS/i.test(document.body.innerText || ''),
+                { timeout: 8000, polling: 300 }
+              );
+            } catch { /* list may be empty */ }
+          }
+        }
+      } else if (lastPageHadDate) {
+        // We've advanced past the target date — all cards collected
+        break;
       }
 
-      // Deduplicate by time+course
-      const seen = new Set();
-      return results.filter(r => {
-        const key = `${r.time}-${r.course}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    }, date);
+      // Advance to next page
+      const advanced = await this._tryAdvanceReservationsPage();
+      if (!advanced) {
+        logger.debug(`No more reservation pages after page ${pageNum + 1}`);
+        break;
+      }
+      logger.info(`Advancing to reservation page ${pageNum + 2}...`);
+      // Wait for new page cards to render
+      try {
+        await this.page.waitForFunction(
+          () => /VIEW DETAILS|View Details/i.test(document.body.innerText || ''),
+          { timeout: 8000, polling: 300 }
+        );
+      } catch { /* last/empty page */ }
+      await this.page.waitForTimeout(300);
+    }
 
     if (reservations.length > 0) {
       const details = reservations.map(r => `${r.time} (${r.course})${r.reservationNumber ? ' Res#' + r.reservationNumber : ''}`).join(', ');
@@ -1798,6 +1901,59 @@ class SiteAutomation {
       logger.warn(`Verification error: ${error.message}`);
       return { verified: false, reservations: [] };
     }
+  }
+
+  /**
+   * Try to advance to the next page of reservations.
+   * Handles "Load More" buttons, standard pagination Next buttons,
+   * and infinite-scroll (detects page height growth after scrolling).
+   * Returns true if the page content likely changed, false if exhausted.
+   */
+  async _tryAdvanceReservationsPage() {
+    const nextSelectors = [
+      'button:has-text("NEXT")',
+      'button:has-text("Next")',
+      'a:has-text("NEXT")',
+      'a:has-text("Next")',
+      'button:has-text("Load More")',
+      'button:has-text("Show More")',
+      'button:has-text("View More")',
+      '[aria-label="Next page"]',
+      '[aria-label="next"]',
+      '[aria-label="Go to next page"]',
+      'li[class*="next"] a',
+      '[class*="pagination"] [class*="next"]:not([class*="disabled"])',
+    ];
+
+    for (const sel of nextSelectors) {
+      try {
+        const btn = await this.page.$(sel);
+        if (!btn || !(await btn.isVisible())) continue;
+        const disabled = await btn.evaluate(el =>
+          el.disabled ||
+          el.getAttribute('aria-disabled') === 'true' ||
+          el.classList.contains('disabled') ||
+          el.closest('[class*="disabled"]') !== null
+        );
+        if (disabled) continue;
+        await btn.evaluate(el => el.click());
+        await this.page.waitForTimeout(2000);
+        logger.debug(`Advanced reservations page via: ${sel}`);
+        return true;
+      } catch { /* try next selector */ }
+    }
+
+    // Infinite scroll fallback: scroll to bottom and check if page grew
+    const prevHeight = await this.page.evaluate(() => document.body.scrollHeight);
+    await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await this.page.waitForTimeout(1500);
+    const newHeight = await this.page.evaluate(() => document.body.scrollHeight);
+    if (newHeight > prevHeight) {
+      logger.debug('Scrolled down to trigger infinite-scroll reservation load');
+      return true;
+    }
+
+    return false;
   }
 
   _timeToMinutes(time) {
