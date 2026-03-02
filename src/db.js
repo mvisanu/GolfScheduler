@@ -194,6 +194,12 @@ module.exports = {
     save();
   },
 
+  async getBookingById(id) {
+    await getDb();
+    const rows = queryAll(`SELECT * FROM bookings WHERE id = $id`, { $id: id });
+    return rows[0] || null;
+  },
+
   async getConfirmedByDate(date) {
     await getDb();
     return queryAll(`
