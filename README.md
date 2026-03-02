@@ -9,15 +9,16 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 ## Features
 
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
-- **Existing reservation check** — checks the site's Reservations page before booking; skips slots already booked (prevents double-booking across runs or manual bookings)
+- **Existing reservation check** — checks the site's Reservations page before booking; paginates through all pages, clicks VIEW DETAILS per card, and skips slots already booked (prevents double-booking across runs or manual bookings)
 - **10-attempt course/time fallback:** 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other — locks to the first course that gets a booking
 - **Two-pass slot strategy:** consecutive slots first, then individual fallback
 - **Individual checkout per slot:** Book Now → 4 golfers → Add to Cart → Agree to Terms → Complete Your Purchase
 - **Cart cleanup** — clears stale cart items after login to avoid "cart limit" errors
-- **Calendar web view** at http://localhost:3002 with color-coded booking status
+- **Calendar web view** at http://localhost:3002 with color-coded booking status, zoom widget, and one-click booking buttons
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
 - **Screenshot capture** at every booking step for verification
 - **Retry logic** — failed slots retry up to 3 times across runs
+- **Cancel command** — cancels reservations on the site and marks them in the database
 
 ---
 
@@ -96,6 +97,9 @@ npm run init
 
 # Run continuously (every 6 hours)
 npm run scheduler
+
+# Cancel all reservations for a date
+npm run cancel -- 2026-03-15
 ```
 
 ---
@@ -118,8 +122,10 @@ npm run web
 
 Opens a calendar view at **http://localhost:3002** showing:
 - Current and next month calendars
-- Each booked tee time with course name (Pines/Oaks)
-- Color-coded status: green (confirmed), amber (pending), red (failed)
+- Each booked tee time as a color-coded chip (green = confirmed, amber = pending, red = failed)
+- **Schedule Month** button (current month) and **Book Now** button (next month) — trigger the booking engine in the background
+- Click any chip or table row to open a detail modal with cancel option
+- **Floating zoom widget** (bottom-right) — A−/A+ buttons or Ctrl+=/−/0, persists across sessions
 - Detail table below with all booking information
 - API endpoint at `GET /api/bookings` for JSON data
 
@@ -129,7 +135,11 @@ Opens a calendar view at **http://localhost:3002** showing:
 
 ### Pre-booking check
 
-Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. Any slot that matches an existing reservation is marked as `confirmed` and skipped. Match logic: slots with a booking window (all current schedules) match within `window ±2hr`; fixed-time slots match within `±15 min`. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
+Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. It paginates through all pages (up to 20), and for each page that shows the target date, clicks VIEW DETAILS one card at a time (each navigates to a detail page in the SPA), extracts the reservation details, then goes back to the list.
+
+Any slot that matches an existing reservation is marked as `confirmed` and skipped. Match logic: slots with a booking window (all current schedules) match within `window ±2hr`; fixed-time slots match within `±15 min`. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
+
+> **Site limitation:** The Upcoming Reservations section only shows reservations within approximately 7 days of today. Dates further out cannot be pre-checked.
 
 ### 10-attempt course and time fallback
 
@@ -205,11 +215,12 @@ GolfScheduler/
 │   ├── config.js         # Environment + schedule config loader
 │   ├── db.js             # SQLite state tracking (sql.js)
 │   ├── scheduler.js      # Date/slot computation
-│   ├── booking.js        # Booking orchestrator (4-step fallback)
+│   ├── booking.js        # Booking orchestrator (10-attempt fallback)
 │   ├── site.js           # Playwright browser automation
-│   ├── web.js            # Express calendar web view
+│   ├── web.js            # Express calendar web view (port 3002)
 │   ├── notify.js         # Alert/notification module
 │   └── logger.js         # Winston logging
+├── fix-confirmations.js  # Utility: backfill real confirmation numbers from site
 ├── setup-scheduler.ps1   # Windows Task Scheduler setup script
 ├── screenshots/          # Booking confirmation screenshots
 ├── data/                 # SQLite database (auto-created)
@@ -233,6 +244,7 @@ The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adj
 | Tee time display | `src/site.js` → `getAvailableTeeTimes()` and `_extractTime()` |
 | Booking modal | `src/site.js` → `bookSlot()` and `_setPlayerCount()` |
 | Checkout flow | `src/site.js` → `completeCheckout()` — terms checkbox and purchase button |
+| Reservations page | `src/site.js` → `getExistingReservations()` — card selectors, VIEW DETAILS, pagination |
 | Course IDs | `src/config.js` → `site.courses` |
 | Site URLs | `src/config.js` → `site.memberUrl` and `site.apiBase` |
 
@@ -258,3 +270,4 @@ The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adj
 | `sql.js` issues | Uses pure-JS SQLite — no native build needed |
 | Playwright browser missing | Run `npx playwright install chromium` |
 | BLOCKED alert | Stop the bot, check the site manually, do not retry automatically |
+| Reservation check finds nothing | Site only shows upcoming reservations within ~7 days; dates further out cannot be pre-checked |
