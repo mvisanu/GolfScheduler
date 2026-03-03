@@ -16,7 +16,7 @@ class SiteAutomation {
   async init() {
     logger.info('Launching browser...');
     this.browser = await chromium.launch({
-      headless: false,
+      headless: process.env.HEADLESS === 'true',
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
     this.context = await this.browser.newContext({
@@ -2286,6 +2286,154 @@ class SiteAutomation {
     await this.page.waitForTimeout(500);
 
     return optionTexts[targetIdx];
+  }
+
+  /**
+   * Extract date/time/course/confirmationNumber from a detail page already loaded
+   * in this.page. Uses body text scan and URL pattern matching.
+   * @param {string|null} fallbackId - Fallback confirmation number when URL has no ID segment.
+   * @returns {{ date: string|null, time: string|null, course: string, confirmationNumber: string|null }}
+   */
+  async _extractDetailPage(fallbackId) {
+    return this.page.evaluate((fb) => {
+      const body = document.body.innerText || '';
+      const urlMatch = window.location.href.match(/\/reservation\/history\/(\d+)/);
+      const confirmationNumber = urlMatch ? urlMatch[1] : fb;
+
+      const timeMatch = body.match(/(\d{1,2}:\d{2})\s*(AM|PM)/i);
+      let time24 = null;
+      if (timeMatch) {
+        let [, t, period] = timeMatch;
+        let [h, m] = t.split(':').map(Number);
+        if (period.toUpperCase() === 'PM' && h !== 12) h += 12;
+        if (period.toUpperCase() === 'AM' && h === 12) h = 0;
+        time24 = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      }
+
+      const dateMatch = body.match(
+        /(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),?\s+(\w+)\s+(\d{1,2})(?:,?\s+(\d{4}))?/i
+      );
+      let dateStr = null;
+      if (dateMatch) {
+        const months = { January:1, February:2, March:3, April:4, May:5, June:6,
+                         July:7, August:8, September:9, October:10, November:11, December:12 };
+        const month = months[dateMatch[1]];
+        const day = parseInt(dateMatch[2]);
+        const year = dateMatch[3] ? parseInt(dateMatch[3]) : new Date().getFullYear();
+        if (month) dateStr = `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      }
+
+      let course = 'Unknown';
+      if (/pines/i.test(body)) course = 'Pines';
+      else if (/oaks/i.test(body)) course = 'Oaks';
+
+      return { date: dateStr, time: time24, course, confirmationNumber };
+    }, fallbackId);
+  }
+
+  /**
+   * Scrape ALL reservation cards currently visible on the /reservation/history list page.
+   * Clicks each VIEW DETAILS button, extracts info via _extractDetailPage, then goes back.
+   * Requires an active browser session (call init() and login() first).
+   * @returns {Promise<Array<{ date: string, time: string, course: string, confirmationNumber: string }>>}
+   */
+  async scrapeReservationHistory() {
+    if (!this.page) {
+      throw new Error('scrapeReservationHistory() called before init() — this.page is not initialised');
+    }
+
+    const baseUrl = config.site.memberUrl;
+    const reservations = [];
+
+    logger.info('Navigating to reservation history...');
+    await this.page.goto(`${baseUrl}/reservation/history`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await this.page.waitForTimeout(3000);
+
+    // Scroll to bottom to trigger lazy-loaded cards
+    await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await this.page.waitForTimeout(1500);
+    await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await this.page.waitForTimeout(1000);
+
+    try {
+      await this.page.waitForFunction(
+        () => /VIEW DETAILS|View Details/i.test(document.body.innerText || ''),
+        { timeout: 10000, polling: 300 }
+      );
+    } catch { /* no cards */ }
+
+    // Count cards once before we start clicking
+    const cardCount = await this.page.evaluate(() =>
+      [...document.querySelectorAll('button')].filter(b => /view details/i.test(b.textContent || '')).length
+    ).catch(() => 0);
+
+    logger.info(`Found ${cardCount} card(s) on reservation list page`);
+
+    for (let idx = 0; idx < cardCount; idx++) {
+      const clicked = await this.page.evaluate((skip) => {
+        const btns = [...document.querySelectorAll('button')].filter(
+          b => /view details/i.test(b.textContent || '')
+        );
+        if (btns.length <= skip) return false;
+        btns[skip].click();
+        return true;
+      }, idx).catch(() => false);
+
+      if (!clicked) break;
+      await this.page.waitForTimeout(2000);
+
+      const res = await this._extractDetailPage(null);
+      if (res.date && res.time) {
+        logger.info(`  Card ${idx + 1}: ${res.date} ${res.time} ${res.course} Res#${res.confirmationNumber}`);
+        reservations.push(res);
+      } else {
+        logger.warn(`  Card ${idx + 1}: could not extract (url=${this.page.url()})`);
+      }
+
+      // Go back to list page
+      await this.page.goBack({ waitUntil: 'domcontentloaded' }).catch(async () => {
+        await this.page.goto(`${baseUrl}/reservation/history`, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      });
+      await this.page.waitForTimeout(1500);
+      try {
+        await this.page.waitForFunction(
+          () => /VIEW DETAILS/i.test(document.body.innerText || ''),
+          { timeout: 8000, polling: 300 }
+        );
+      } catch { /* ok */ }
+    }
+
+    return reservations;
+  }
+
+  /**
+   * Navigate directly to a specific reservation detail URL by ID and extract its data.
+   * Returns null if the page is a 404 or the data cannot be parsed.
+   * Requires an active browser session (call init() and login() first).
+   * @param {number|string} id - Numeric reservation ID.
+   * @returns {Promise<{ date: string, time: string, course: string, confirmationNumber: string }|null>}
+   */
+  async fetchReservationById(id) {
+    if (!this.page) {
+      throw new Error('fetchReservationById() called before init() — this.page is not initialised');
+    }
+
+    const baseUrl = config.site.memberUrl;
+    const url = `${baseUrl}/reservation/history/${id}/details`;
+    try {
+      await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await this.page.waitForTimeout(1500);
+
+      // Check for 404 / page not found
+      const bodyText = await this.page.evaluate(() => document.body.innerText || '');
+      if (/page not found|404|not found/i.test(bodyText.slice(0, 500))) return null;
+      if (!bodyText.includes(':')) return null; // too short / wrong page
+
+      const res = await this._extractDetailPage(String(id));
+      return (res.date && res.time) ? res : null;
+    } catch {
+      return null;
+    }
   }
 }
 

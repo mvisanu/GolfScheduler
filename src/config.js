@@ -61,6 +61,16 @@ const config = {
   // Log level
   logLevel: process.env.LOG_LEVEL || 'info',
 
+  // Scheduler fire hour (0–23, local time). Default: 6 (06:00).
+  schedulerHour: (() => {
+    const raw = parseInt(process.env.SCHEDULER_HOUR || '6', 10);
+    if (isNaN(raw) || raw < 0 || raw > 23) {
+      console.warn(`WARNING: SCHEDULER_HOUR="${process.env.SCHEDULER_HOUR}" is out of range (0–23) — defaulting to 6`);
+      return 6;
+    }
+    return raw;
+  })(),
+
   // Site URLs and IDs (TeeItUp / Kenna Golf platform)
   site: {
     memberUrl: 'https://fort-walton-member.book.teeitup.golf',

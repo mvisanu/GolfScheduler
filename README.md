@@ -2,19 +2,20 @@
 
 Automated tee time booking bot for [Fort Walton Beach Golf](https://www.fwbgolf.com/) (TeeItUp platform).
 
-Keeps the schedule filled for the next 30 days with configurable recurring bookings. Tries the preferred course first, then falls back to the other course. If consecutive slots aren't available, books any individual slots in the time window to maximize golfers booked.
+Keeps the schedule filled for the next 30 days with configurable recurring bookings. Syncs with the FWB site daily to keep the database accurate, then books any pending slots.
 
 ---
 
 ## Features
 
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
-- **Existing reservation check** — checks the site's Reservations page before booking; paginates through all pages, clicks VIEW DETAILS per card, and skips slots already booked (prevents double-booking across runs or manual bookings)
-- **10-attempt course/time fallback:** 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other — locks to the first course that gets a booking
-- **Two-pass slot strategy:** consecutive slots first, then individual fallback
-- **Individual checkout per slot:** Book Now → 4 golfers → Add to Cart → Agree to Terms → Complete Your Purchase
-- **Cart cleanup** — clears stale cart items after login to avoid "cart limit" errors
-- **Calendar web view** at http://localhost:3002 with color-coded booking status, zoom widget, and one-click booking buttons
+- **Daily sync engine** — scrapes the FWB site reservation history and auto-corrects any mismatches (wrong times, confirmation numbers) in the database
+- **Existing reservation check** — pre-checks the site before booking to skip already-booked slots and prevent double-booking
+- **10-attempt course/time fallback** — 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other
+- **Two-pass slot strategy** — consecutive slots first, then individual fallback
+- **Calendar web view** at `http://localhost:3002` with color-coded booking status, mobile-responsive layout, and admin controls
+- **External access** — share the schedule with your golf group via a public URL (DuckDNS + optional HTTPS)
+- **Admin page** at `/admin` (localhost only) — full access log with visitor IP, country, browser, device, ISP
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
 - **Screenshot capture** at every booking step for verification
 - **Retry logic** — failed slots retry up to 3 times across runs
@@ -83,6 +84,9 @@ Each entry:
 # Dry run — see what would be booked (no actual bookings)
 npm run dry-run
 
+# Sync DB with FWB site (corrects times, confirmation numbers)
+npm run sync
+
 # Book all pending tee times (single run)
 npm run book
 
@@ -95,7 +99,7 @@ npm run web
 # Initialize database without booking
 npm run init
 
-# Run continuously (every 6 hours)
+# Run daily scheduler (syncs then books at 06:00 every day)
 npm run scheduler
 
 # Cancel all reservations for a date
@@ -122,37 +126,98 @@ npm run web
 
 Opens a calendar view at **http://localhost:3002** showing:
 - Current and next month calendars
-- Each booked tee time as a color-coded chip (green = confirmed, amber = pending, red = failed)
-- **Schedule Month** button (current month) and **Book Now** button (next month) — trigger the booking engine in the background
-- Click any chip or table row to open a detail modal with cancel option
-- **Floating zoom widget** (bottom-right) — A−/A+ buttons or Ctrl+=/−/0, persists across sessions
-- Detail table below with all booking information
-- API endpoint at `GET /api/bookings` for JSON data
+- Each booked tee time as a color-coded chip (green = confirmed, amber = pending, red = failed, grey/strikethrough = cancelled)
+- **Last synced** timestamp in the header
+- Mobile-responsive: collapses to a card list on small screens
+- Click any chip to open a detail modal
+- API endpoint at `GET /api/bookings` returns `{ bookings, lastSyncAt }`
+
+**Admin controls** (localhost only — hidden for external visitors):
+- **Schedule Month** / **Book Now** buttons to trigger the booking engine
+- **Cancel** button in booking detail modals
+- `/admin` page with full visitor access log (IP, country, browser, device, ISP)
+
+---
+
+## Daily Sync
+
+```bash
+npm run sync
+```
+
+The sync engine keeps the database accurate when the FWB site is the source of truth:
+
+1. **Step 1** — Scrapes the reservation history page (visible within ~7 days)
+2. **Step 2** — Probes by ID around known confirmation numbers for dates beyond the 7-day window
+3. **Reconcile** — Pairs site reservations to DB rows positionally; updates `actual_time`, `confirmation_number`, and `course` for any mismatches
+4. Logs all changes with `[SYNC]` prefix; warns for confirmed bookings not found on site
+
+Run automatically every day at 06:00 when using `npm run scheduler`.
+
+---
+
+## Daily Scheduler
+
+```bash
+npm run scheduler
+```
+
+Runs automatically at **06:00 local time** every day (configurable via `SCHEDULER_HOUR`):
+
+1. Opens one shared browser session (headless)
+2. Runs `npm run sync` to correct the database from the site
+3. Runs `npm run book` to fill any pending slots
+4. Closes the session
+
+If started after 06:00, it runs immediately and then schedules the next fire for 06:00 tomorrow.
+
+Set `HEADLESS=true` in `.env` for automated/background runs (no visible browser window).
+
+---
+
+## External Access (Share with Golf Group)
+
+To let your golf group view the schedule from their phones:
+
+1. **DuckDNS** — create a free subdomain at [duckdns.org](https://www.duckdns.org)
+2. **Port forwarding** — forward TCP port `3002` on your router to your machine's local IP
+3. Share the URL: `http://your-name.duckdns.org:3002`
+
+External visitors see the read-only calendar — no admin buttons or cancel controls.
+
+### Optional: HTTPS
+
+Generate a self-signed certificate:
+
+```bash
+mkdir -p data/certs
+MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 -keyout data/certs/key.pem -out data/certs/cert.pem -days 365 -nodes -subj "/CN=your-name.duckdns.org"
+```
+
+Then enable it in `.env`:
+
+```
+HTTPS_ENABLED=true
+```
+
+Visitors will see a one-time browser security warning (self-signed cert). Click **Advanced → Proceed** to continue.
+
+For a fully trusted cert (no browser warning), run `node get-cert.js` which uses Let's Encrypt via DuckDNS DNS challenge (requires `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` in `.env`).
 
 ---
 
 ## Booking Strategy
 
-### Pre-booking check
-
-Before booking, the bot navigates to the site's **Reservations** page and checks for existing tee times on the target date. It paginates through all pages (up to 20), and for each page that shows the target date, clicks VIEW DETAILS one card at a time (each navigates to a detail page in the SPA), extracts the reservation details, then goes back to the list.
-
-Any slot that matches an existing reservation is marked as `confirmed` and skipped. Match logic: slots with a booking window (all current schedules) match within `window ±2hr`; fixed-time slots match within `±15 min`. This prevents double-booking when the bot runs multiple times or when tee times were booked manually.
-
-> **Site limitation:** The Upcoming Reservations section only shows reservations within approximately 7 days of today. Dates further out cannot be pre-checked.
-
 ### 10-attempt course and time fallback
 
-For each scheduled day, the bot tries up to 10 combinations in order — 5 time offsets on the preferred course, then 5 on the other:
+For each scheduled day, the bot tries up to 10 combinations in order:
 
 | Attempt | Course | Time Offset |
 |---------|--------|-------------|
 | 1–5 | Preferred (from schedule) | 0, −1hr, +1hr, −2hr, +2hr |
 | 6–10 | Other course | 0, −1hr, +1hr, −2hr, +2hr |
 
-At each attempt, the bot first looks for **consecutive** tee times (ideal for group play). If not enough consecutive slots exist, it falls back to **individual** slots within the window.
-
-Once a slot is booked on a course, the engine **locks to that course** for all remaining slots on that day (no splitting across Pines/Oaks). Remaining attempts are skipped once all slots are filled.
+Once a slot is booked on a course, the engine locks to that course for all remaining slots on that day.
 
 ### Per-slot checkout
 
@@ -162,46 +227,6 @@ Each tee time is checked out individually:
 - Click **Add to Cart**
 - Check **I agree to Terms and Conditions**
 - Click **Complete Your Purchase**
-- Navigate back and book the next slot
-
----
-
-## Scheduling (Automated Runs)
-
-### Windows Task Scheduler (recommended: twice weekly)
-
-Run this in PowerShell as administrator:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\Bruce\source\repos\GolfScheduler\setup-scheduler.ps1
-```
-
-This creates a task that runs every **Monday and Thursday at 6:00 AM** to keep the next 30 days booked.
-
-**Manual setup:**
-
-1. Open **Task Scheduler** (search "Task Scheduler" in Start menu)
-2. Click **Create Basic Task**
-3. Name: `Golf Scheduler`
-4. Trigger: **Weekly**, Monday and Thursday at `6:00 AM`
-5. Action: **Start a program**
-   - Program: `C:\Program Files\nodejs\node.exe`
-   - Arguments: `src/index.js book`
-   - Start in: `C:\Users\Bruce\source\repos\GolfScheduler`
-6. Finish
-
-### Mac/Linux (cron)
-
-```bash
-# Run Monday and Thursday at 6 AM Central
-0 6 * * 1,4 cd /path/to/GolfScheduler && /usr/bin/node src/index.js book >> /tmp/golf-scheduler.log 2>&1
-```
-
-### Docker
-
-```bash
-docker-compose up -d
-```
 
 ---
 
@@ -210,6 +235,7 @@ docker-compose up -d
 ```
 GolfScheduler/
 ├── schedule.json         # Configurable booking schedule
+├── get-cert.js           # Let's Encrypt cert via DuckDNS DNS challenge
 ├── src/
 │   ├── index.js          # CLI entry point (commander)
 │   ├── config.js         # Environment + schedule config loader
@@ -217,45 +243,54 @@ GolfScheduler/
 │   ├── scheduler.js      # Date/slot computation
 │   ├── booking.js        # Booking orchestrator (10-attempt fallback)
 │   ├── site.js           # Playwright browser automation
+│   ├── sync.js           # DB/site sync engine
+│   ├── reconcile.js      # Per-date reconciliation logic
 │   ├── web.js            # Express calendar web view (port 3002)
 │   ├── notify.js         # Alert/notification module
 │   └── logger.js         # Winston logging
-├── fix-confirmations.js  # Utility: backfill real confirmation numbers from site
-├── setup-scheduler.ps1   # Windows Task Scheduler setup script
+├── data/
+│   ├── bookings.db       # SQLite database (auto-created)
+│   ├── sync-meta.json    # Last sync timestamp
+│   ├── access-log.json   # Visitor access log (persisted)
+│   └── certs/            # TLS certificates (optional)
 ├── screenshots/          # Booking confirmation screenshots
-├── data/                 # SQLite database (auto-created)
 ├── .env.example          # Template for credentials
-├── Dockerfile
-├── docker-compose.yml
 └── package.json
 ```
 
 ---
 
-## What to Change If the UI Changes
+## Environment Variables
 
-The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adjust:
-
-| What changed | Where to fix |
-|-------------|-------------|
-| Login form | `src/site.js` → `login()` — update email/password/submit selectors |
-| Login iframe | `src/site.js` → `_findLoginFrame()` |
-| Course selector | `src/site.js` → `selectCourse()` |
-| Tee time display | `src/site.js` → `getAvailableTeeTimes()` and `_extractTime()` |
-| Booking modal | `src/site.js` → `bookSlot()` and `_setPlayerCount()` |
-| Checkout flow | `src/site.js` → `completeCheckout()` — terms checkbox and purchase button |
-| Reservations page | `src/site.js` → `getExistingReservations()` — card selectors, VIEW DETAILS, pagination |
-| Course IDs | `src/config.js` → `site.courses` |
-| Site URLs | `src/config.js` → `site.memberUrl` and `site.apiBase` |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOLF_EMAIL` | required | GolfID login email |
+| `GOLF_PASSWORD` | required | GolfID login password |
+| `TIMEZONE` | `America/Chicago` | Local timezone for scheduling |
+| `BOOKING_HORIZON_DAYS` | `30` | How many days ahead to book |
+| `FALLBACK_MINUTES` | `30` | Max deviation from target tee time |
+| `SCHEDULER_HOUR` | `6` | Hour (0–23) for the daily scheduler fire |
+| `HEADLESS` | `false` | Set `true` for automated/daemon runs |
+| `HTTPS_ENABLED` | `false` | Set `true` to serve HTTPS using `data/certs/` |
+| `DUCKDNS_TOKEN` | — | DuckDNS API token (for `get-cert.js`) |
+| `DUCKDNS_DOMAIN` | — | DuckDNS subdomain name (without `.duckdns.org`) |
+| `LOG_LEVEL` | `info` | Winston log level |
+| `DB_PATH` | `./data/bookings.db` | SQLite database path |
+| `SCREENSHOT_DIR` | `./screenshots` | Screenshot output directory |
 
 ---
 
-## Safety
+## What to Change If the UI Changes
 
-- Credentials are **never hardcoded** — always loaded from `.env`
-- CAPTCHA and security blocks are **detected, not bypassed** — the bot stops and alerts
-- Double-bookings are **prevented** by SQLite unique constraints AND pre-booking reservation check
-- Retry limit is **3 attempts** per slot (configurable in config.js)
+| What changed | Where to fix |
+|-------------|-------------|
+| Login form | `src/site.js` → `login()` |
+| Course selector | `src/site.js` → `selectCourse()` |
+| Tee time display | `src/site.js` → `getAvailableTeeTimes()` |
+| Booking modal | `src/site.js` → `bookSlot()` |
+| Checkout flow | `src/site.js` → `completeCheckout()` |
+| Reservations page | `src/site.js` → `getExistingReservations()` |
+| Course IDs | `src/config.js` → `site.courses` |
 
 ---
 
@@ -264,10 +299,11 @@ The TeeItUp booking platform (Kenna Golf) may update its UI. Here's where to adj
 | Problem | Solution |
 |---------|----------|
 | `GOLF_EMAIL and GOLF_PASSWORD required` | Copy `.env.example` to `.env` and fill in credentials |
-| `schedule.json not found` | Create `schedule.json` in the project root (see Configure schedule above) |
-| Login fails | Check credentials; site may have changed login flow — see table above |
-| No tee times found | Check screenshots in `./screenshots/`; the date may not have slots open yet |
-| `sql.js` issues | Uses pure-JS SQLite — no native build needed |
+| Login fails | Check credentials; see site.js login() for selector updates |
+| No tee times found | Check `./screenshots/`; date may not have slots open yet |
 | Playwright browser missing | Run `npx playwright install chromium` |
 | BLOCKED alert | Stop the bot, check the site manually, do not retry automatically |
-| Reservation check finds nothing | Site only shows upcoming reservations within ~7 days; dates further out cannot be pre-checked |
+| Sync finds nothing beyond 7 days | Site only shows upcoming reservations within ~7 days |
+| HTTPS cert warning | Self-signed cert — click Advanced → Proceed once per browser |
+| `get-cert.js` fails with SERVFAIL | DuckDNS nameservers are flaky — try again later |
+| External URL not reachable | Check router port forwarding points to correct local IP:3002 |

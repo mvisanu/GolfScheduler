@@ -59,29 +59,119 @@ program
 
 program
   .command('scheduler')
-  .description('Run continuously, checking every 6 hours')
+  .description('Run daily at SCHEDULER_HOUR (default 06:00): sync then book')
   .action(async () => {
+    // Force headless mode for the automated daily job so no browser window pops up.
+    process.env.HEADLESS = 'true';
+
     const BookingEngine = require('./booking');
+    const SiteAutomation = require('./site');
+    const { runSync } = require('./sync');
     const logger = require('./logger');
-    const INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+    const config = require('./config');
+    const dayjs = require('dayjs');
+    const utc = require('dayjs/plugin/utc');
+    const timezone = require('dayjs/plugin/timezone');
+    dayjs.extend(utc);
+    dayjs.extend(timezone);
 
-    logger.info('Scheduler mode started — will run every 6 hours');
-    logger.info('Press Ctrl+C to stop');
+    const hour = config.schedulerHour;
+    logger.info(`[SCHEDULER] Scheduler mode started — daily job fires at ${String(hour).padStart(2, '0')}:00 ${config.timezone}`);
+    logger.info('[SCHEDULER] Press Ctrl+C to stop');
 
-    const runOnce = async () => {
-      try {
-        const engine = new BookingEngine();
-        await engine.run();
-      } catch (err) {
-        logger.error(`Scheduler run error: ${err.message}`);
+    /**
+     * Returns the number of milliseconds until the next occurrence of `hour:00`
+     * in the configured timezone. Returns 0 if that time has already passed today
+     * (so the job runs immediately on startup).
+     *
+     * @param {number} fireHour  0–23
+     * @returns {number}
+     */
+    function msUntilNextFire(fireHour) {
+      const now = dayjs().tz(config.timezone);
+      // Target: today at fireHour:00:00
+      let target = now.startOf('day').add(fireHour, 'hour');
+      // If target is in the past (or right now), move to tomorrow.
+      if (target.valueOf() <= now.valueOf()) {
+        target = target.add(1, 'day');
       }
+      return target.valueOf() - now.valueOf();
+    }
+
+    /**
+     * Execute one full daily job cycle: sync → book.
+     * Creates a single shared SiteAutomation session for both phases.
+     */
+    const runOnce = async () => {
+      const startTime = dayjs().tz(config.timezone);
+      logger.info(`[SCHEDULER] === Daily job started at ${startTime.format('YYYY-MM-DD HH:mm:ss z')} ===`);
+
+      const site = new SiteAutomation();
+      let syncResult = { checked: 0, updated: 0, warnings: 0, errors: 0 };
+      let bookingResult = { total: 0, booked: 0, failed: 0, partial: 0 };
+
+      try {
+        await site.init();
+        await site.navigateToBooking(
+          config.site.courses.pines.id,
+          new Date().toISOString().slice(0, 10)
+        );
+        await site.login();
+
+        // ── Phase 1: Sync ────────────────────────────────────────────────────
+        try {
+          syncResult = await runSync(site);
+        } catch (syncErr) {
+          logger.error(`[SCHEDULER] Sync phase error: ${syncErr.message}`);
+          syncResult.errors = (syncResult.errors || 0) + 1;
+        }
+        logger.info(
+          `[SCHEDULER] Sync result: checked=${syncResult.checked} updated=${syncResult.updated} ` +
+          `warnings=${syncResult.warnings} errors=${syncResult.errors}`
+        );
+
+        // ── Phase 2: Book ────────────────────────────────────────────────────
+        try {
+          const engine = new BookingEngine({ site });
+          bookingResult = await engine.run();
+        } catch (bookErr) {
+          logger.error(`[SCHEDULER] Booking phase error: ${bookErr.message}`);
+          bookingResult.failed = (bookingResult.failed || 0) + 1;
+        }
+        logger.info(
+          `[SCHEDULER] Booking result: total=${bookingResult.total} booked=${bookingResult.booked} failed=${bookingResult.failed}`
+        );
+
+      } finally {
+        try {
+          await site.close();
+        } catch (closeErr) {
+          logger.error(`[SCHEDULER] Error closing browser session: ${closeErr.message}`);
+        }
+      }
+
+      const elapsed = Date.now() - startTime.valueOf();
+      logger.info(`[SCHEDULER] === Daily job completed in ${elapsed}ms ===`);
+
+      // Schedule the next fire.
+      const delay = msUntilNextFire(hour);
+      const nextFire = dayjs().tz(config.timezone).add(delay, 'millisecond');
+      logger.info(`[SCHEDULER] Next run scheduled for ${nextFire.format('YYYY-MM-DD HH:mm:ss z')} (in ${Math.round(delay / 1000)}s)`);
+      setTimeout(runOnce, delay);
     };
 
-    // Run immediately
-    await runOnce();
-
-    // Then repeat
-    setInterval(runOnce, INTERVAL_MS);
+    // FR-023: Run immediately if the startup time is past today's fire time;
+    // otherwise wait until the next fire time.
+    const initialDelay = msUntilNextFire(hour);
+    if (initialDelay === 0 || dayjs().tz(config.timezone).hour() >= hour) {
+      // Past today's fire time — run immediately.
+      logger.info('[SCHEDULER] Startup is past today\'s fire time — running immediately');
+      await runOnce();
+    } else {
+      const nextFire = dayjs().tz(config.timezone).add(initialDelay, 'millisecond');
+      logger.info(`[SCHEDULER] Waiting until ${nextFire.format('YYYY-MM-DD HH:mm:ss z')} for first run`);
+      setTimeout(runOnce, initialDelay);
+    }
   });
 
 program
@@ -198,6 +288,16 @@ program
   .action(async () => {
     const { startServer } = require('./web');
     await startServer();
+  });
+
+program
+  .command('sync')
+  .description('Sync DB with FWB site reservation history')
+  .action(async () => {
+    const { runSync } = require('./sync');
+    const result = await runSync();
+    console.log('Sync complete:', JSON.stringify(result, null, 2));
+    process.exit(0);
   });
 
 program.parse();

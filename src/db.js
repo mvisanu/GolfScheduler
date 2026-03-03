@@ -4,6 +4,7 @@ const fs = require('fs');
 const config = require('./config');
 
 let db = null;
+let dbLoadedAt = 0; // ms timestamp of when we last read the file
 
 async function getDb() {
   if (db) return db;
@@ -16,6 +17,7 @@ async function getDb() {
   if (fs.existsSync(config.dbPath)) {
     const buffer = fs.readFileSync(config.dbPath);
     db = new SQL.Database(buffer);
+    dbLoadedAt = fs.statSync(config.dbPath).mtimeMs;
   } else {
     db = new SQL.Database();
   }
@@ -120,6 +122,16 @@ module.exports = {
   },
 
   async getAllUpcoming() {
+    // Reload from disk if the file has been updated since our last read
+    // (e.g. booking engine or sync script wrote new data).
+    if (db && fs.existsSync(config.dbPath)) {
+      const fileMtime = fs.statSync(config.dbPath).mtimeMs;
+      if (fileMtime > dbLoadedAt) {
+        const SQL = await initSqlJs();
+        db = new SQL.Database(fs.readFileSync(config.dbPath));
+        dbLoadedAt = fileMtime;
+      }
+    }
     await getDb();
     return queryAll(`SELECT * FROM bookings WHERE date >= date('now') ORDER BY date, target_time, slot_index`);
   },
@@ -207,5 +219,41 @@ module.exports = {
       WHERE date = $date AND status = 'confirmed'
       ORDER BY actual_time, target_time, slot_index
     `, { $date: date });
+  },
+
+  async updateBookingSync(id, { actualTime, course, confirmationNumber, restoreConfirmed }) {
+    await getDb();
+    const setCourse = course && course !== 'Unknown' ? '$course' : 'course';
+    run(`
+      UPDATE bookings
+      SET actual_time = $actualTime,
+          course = ${setCourse},
+          confirmation_number = $confirmationNumber,
+          status = CASE WHEN $restoreConfirmed THEN 'confirmed' ELSE status END,
+          updated_at = datetime('now')
+      WHERE id = $id
+    `, {
+      $id: id,
+      $actualTime: actualTime,
+      $course: (course && course !== 'Unknown') ? course : null,
+      $confirmationNumber: confirmationNumber,
+      $restoreConfirmed: restoreConfirmed ? 1 : 0,
+    });
+    save();
+  },
+
+  getLastSyncAt() {
+    const metaPath = path.join(path.dirname(config.dbPath), 'sync-meta.json');
+    try {
+      const raw = fs.readFileSync(metaPath, 'utf8');
+      return JSON.parse(raw).lastSyncAt || null;
+    } catch {
+      return null;
+    }
+  },
+
+  setLastSyncAt(isoString) {
+    const metaPath = path.join(path.dirname(config.dbPath), 'sync-meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify({ lastSyncAt: isoString }), 'utf8');
   },
 };

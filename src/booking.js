@@ -6,9 +6,18 @@ const notify = require('./notify');
 const { computeBookingSlots, groupByDateAndTime } = require('./scheduler');
 
 class BookingEngine {
-  constructor({ dryRun = false } = {}) {
+  /**
+   * @param {object}  [opts]
+   * @param {boolean} [opts.dryRun=false]   When true, log what would be booked but make no site calls.
+   * @param {import('./site')|null} [opts.site=null]
+   *   An already-authenticated SiteAutomation instance to reuse.  When provided,
+   *   BookingEngine skips init(), login(), and close() — the caller is responsible
+   *   for the browser lifecycle.  When null, BookingEngine manages its own session.
+   */
+  constructor({ dryRun = false, site = null } = {}) {
     this.dryRun = dryRun;
-    this.site = new SiteAutomation();
+    this._sharedSite = site !== null;
+    this.site = site !== null ? site : new SiteAutomation();
   }
 
   async run() {
@@ -46,11 +55,14 @@ class BookingEngine {
     let stats = { total: pending.length, booked: 0, failed: 0, partial: 0 };
 
     try {
-      await this.site.init();
-
-      const firstDate = groups[0].date;
-      await this.site.navigateToBooking(config.site.courses.pines.id, firstDate);
-      await this.site.login();
+      if (!this._sharedSite) {
+        // Own session: init, navigate to trigger login modal, log in, clear cart.
+        await this.site.init();
+        const firstDate = groups[0].date;
+        await this.site.navigateToBooking(config.site.courses.pines.id, firstDate);
+        await this.site.login();
+      }
+      // Always clear cart before booking (handles stale cart items in both modes).
       await this.site.clearCart();
 
       for (const group of groups) {
@@ -78,7 +90,10 @@ class BookingEngine {
         logger.error(`Fatal error: ${error.message}`);
       }
     } finally {
-      await this.site.close();
+      // Only close the browser when we own the session.
+      if (!this._sharedSite) {
+        await this.site.close();
+      }
     }
 
     logger.info(`=== Run Complete: ${stats.booked} booked, ${stats.failed} failed, ${stats.partial} partial ===`);

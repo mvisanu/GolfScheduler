@@ -11,9 +11,11 @@
     "scheduler": "node src/index.js scheduler",
     "init": "node src/index.js init",
     "web": "node src/index.js web",
-    "cancel": "node src/index.js cancel"
+    "cancel": "node src/index.js cancel",
+    "sync": "node src/index.js sync"
   },
   "dependencies": {
+    "acme-client": "^5.4.0",
     "commander": "^12.1.0",
     "dayjs": "^1.11.13",
     "dotenv": "^16.4.7",
