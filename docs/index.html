@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FWB Golf Schedule</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-page: #F8F9FA;
+      --bg-card: #FFFFFF;
+      --bg-header: #1B3A2D;
+      --text-primary: #1A1A1A;
+      --text-secondary: #6B7280;
+      --accent-confirmed: #2D6A4F;
+      --accent-pending: #B45309;
+      --accent-failed: #DC2626;
+      --accent-cancelled: #9CA3AF;
+      --accent-action: #1B3A2D;
+      --border: #E5E7EB;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg-page); color: var(--text-primary); line-height: 1.5; font-size: 16px; overflow-x: hidden; }
+    .header { background: var(--bg-header); color: white; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .header h1 { font-family: 'Manrope', sans-serif; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
+    .header .stats { font-size: 0.9rem; opacity: 0.9; }
+    .last-sync { font-size: 0.8rem; opacity: 0.75; margin-top: 2px; }
+    .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
+    .legend { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.875rem; }
+    .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+    .dot-confirmed { background: var(--accent-confirmed); }
+    .dot-pending { background: var(--accent-pending); }
+    .dot-failed { background: var(--accent-failed); }
+    .month-section { margin-bottom: 30px; }
+    .month-nav { margin-bottom: 15px; }
+    .month-nav h2 { font-family: 'Manrope', sans-serif; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
+    .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; background: #ddd; border-radius: 8px; overflow: hidden; }
+    .cal-header { background: var(--bg-header); color: white; padding: 10px; text-align: center; font-weight: 600; font-size: 0.875rem; }
+    .cal-day { background: var(--bg-card); min-height: 120px; padding: 8px; }
+    .cal-day.empty { background: #f9fafb; }
+    .cal-day.today { box-shadow: inset 0 0 0 2px var(--accent-action); }
+    .day-num { font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 6px; }
+    .booking-chip { display: block; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px; font-size: 0.8rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .chip-confirmed { background: var(--accent-confirmed); }
+    .chip-pending { background: var(--accent-pending); }
+    .chip-failed { background: var(--accent-failed); }
+    .chip-partial { background: var(--accent-failed); }
+    .mobile-booking-list { display: none; }
+    .mobile-booking-card { padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); margin-bottom: 8px; }
+    .mobile-booking-card-date { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 8px; }
+    .mobile-booking-list .booking-chip { min-height: 44px; display: flex; align-items: center; padding: 10px 12px; }
+    .footer { text-align: center; padding: 20px; color: var(--text-secondary); font-size: 0.8rem; margin-top: 20px; }
+    @media (max-width: 639px) {
+      .calendar { display: none; }
+      .mobile-booking-list { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>⛳ FWB Golf Schedule</h1>
+    <div>
+      <div class="stats">44 Confirmed &nbsp;|&nbsp; 0 Pending &nbsp;|&nbsp; 0 Failed</div>
+      <div class="last-sync">Last synced: Mar 3, 2026 9:15 AM</div>
+    </div>
+  </div>
+  <div class="container">
+    <div class="legend">
+      <div class="legend-item"><div class="legend-dot dot-confirmed"></div> Confirmed</div>
+      <div class="legend-item"><div class="legend-dot dot-pending"></div> Pending</div>
+      <div class="legend-item"><div class="legend-dot dot-failed"></div> Failed</div>
+    </div>
+
+    
+<div class="month-section">
+  <div class="month-nav"><h2>March 2026</h2></div>
+  <div class="calendar"><div class="cal-header">Sun</div><div class="cal-header">Mon</div><div class="cal-header">Tue</div><div class="cal-header">Wed</div><div class="cal-header">Thu</div><div class="cal-header">Fri</div><div class="cal-header">Sat</div><div class="cal-day"><div class="day-num">1</div></div><div class="cal-day"><div class="day-num">2</div></div><div class="cal-day today"><div class="day-num">3</div></div><div class="cal-day"><div class="day-num">4</div></div><div class="cal-day"><div class="day-num">5</div></div><div class="cal-day"><div class="day-num">6</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418944897">12:40 Pines — #418944897</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945331">14:10 Pines — #418945331</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945121">14:00 Pines — #418945121</div></div><div class="cal-day"><div class="day-num">7</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">10:30 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005227">10:30 Pines — #419005227</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005251">10:30 Pines — #419005251</div></div><div class="cal-day"><div class="day-num">8</div></div><div class="cal-day"><div class="day-num">9</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:30 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:40 Pines</div></div><div class="cal-day"><div class="day-num">10</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">12:10 Pines</div></div><div class="cal-day"><div class="day-num">11</div></div><div class="cal-day"><div class="day-num">12</div></div><div class="cal-day"><div class="day-num">13</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:20 Pines</div></div><div class="cal-day"><div class="day-num">14</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">09:10 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005344">13:10 Pines — #419005344</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005376">13:20 Pines — #419005376</div></div><div class="cal-day"><div class="day-num">15</div></div><div class="cal-day"><div class="day-num">16</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div></div><div class="cal-day"><div class="day-num">17</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:30 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:40 Pines</div></div><div class="cal-day"><div class="day-num">18</div></div><div class="cal-day"><div class="day-num">19</div></div><div class="cal-day"><div class="day-num">20</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945660">13:10 Pines — #418945660</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945697">13:40 Pines — #418945697</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945735">14:00 Pines — #418945735</div></div><div class="cal-day"><div class="day-num">21</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">13:20 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005474">14:00 Pines — #419005474</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005529">14:00 Pines — #419005529</div></div><div class="cal-day"><div class="day-num">22</div></div><div class="cal-day"><div class="day-num">23</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:30 Pines</div></div><div class="cal-day"><div class="day-num">24</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:30 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:40 Pines</div></div><div class="cal-day"><div class="day-num">25</div></div><div class="cal-day"><div class="day-num">26</div></div><div class="cal-day"><div class="day-num">27</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945978">14:40 Pines — #418945978</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418946159">14:40 Pines — #418946159</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418946193">14:50 Pines — #418946193</div></div><div class="cal-day"><div class="day-num">28</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005648">13:10 Pines — #419005648</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005693">13:20 Pines — #419005693</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005730">13:30 Pines — #419005730</div></div><div class="cal-day"><div class="day-num">29</div></div><div class="cal-day"><div class="day-num">30</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946228">12:10 Pines — #418946228</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946260">12:20 Pines — #418946260</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946293">12:30 Pines — #418946293</div></div><div class="cal-day"><div class="day-num">31</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM — #418946331">12:10 Pines — #418946331</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM — #418946362">12:20 Pines — #418946362</div></div></div></div>
+    <div class="mobile-booking-list"><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Friday, March 6</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418944897">12:40 Pines — #418944897</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945331">14:10 Pines — #418945331</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945121">14:00 Pines — #418945121</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Saturday, March 7</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">10:30 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005227">10:30 Pines — #419005227</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005251">10:30 Pines — #419005251</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Monday, March 9</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:30 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:40 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Tuesday, March 10</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">12:10 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Friday, March 13</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM">12:20 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Saturday, March 14</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">09:10 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005344">13:10 Pines — #419005344</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005376">13:20 Pines — #419005376</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Monday, March 16</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:00 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Tuesday, March 17</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:30 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:40 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Friday, March 20</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945660">13:10 Pines — #418945660</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945697">13:40 Pines — #418945697</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945735">14:00 Pines — #418945735</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Saturday, March 21</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM">13:20 Pines</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005474">14:00 Pines — #419005474</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005529">14:00 Pines — #419005529</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Monday, March 23</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:10 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:20 Pines</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM">12:30 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Tuesday, March 24</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:30 Pines</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM">11:40 Pines</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Friday, March 27</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418945978">14:40 Pines — #418945978</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418946159">14:40 Pines — #418946159</div><div class="booking-chip chip-confirmed" title="Friday 12-1 PM — #418946193">14:50 Pines — #418946193</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Saturday, March 28</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005648">13:10 Pines — #419005648</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005693">13:20 Pines — #419005693</div><div class="booking-chip chip-confirmed" title="Saturday 8 AM-1 PM — #419005730">13:30 Pines — #419005730</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Monday, March 30</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946228">12:10 Pines — #418946228</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946260">12:20 Pines — #418946260</div><div class="booking-chip chip-confirmed" title="Monday 12-1 PM — #418946293">12:30 Pines — #418946293</div></div><div class="mobile-booking-card">
+      <div class="mobile-booking-card-date">Tuesday, March 31</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM — #418946331">12:10 Pines — #418946331</div><div class="booking-chip chip-confirmed" title="Tuesday 12-1 PM — #418946362">12:20 Pines — #418946362</div></div></div>
+
+    
+<div class="month-section">
+  <div class="month-nav"><h2>April 2026</h2></div>
+  <div class="calendar"><div class="cal-header">Sun</div><div class="cal-header">Mon</div><div class="cal-header">Tue</div><div class="cal-header">Wed</div><div class="cal-header">Thu</div><div class="cal-header">Fri</div><div class="cal-header">Sat</div><div class="cal-day empty"></div><div class="cal-day empty"></div><div class="cal-day empty"></div><div class="cal-day"><div class="day-num">1</div></div><div class="cal-day"><div class="day-num">2</div></div><div class="cal-day"><div class="day-num">3</div></div><div class="cal-day"><div class="day-num">4</div></div><div class="cal-day"><div class="day-num">5</div></div><div class="cal-day"><div class="day-num">6</div></div><div class="cal-day"><div class="day-num">7</div></div><div class="cal-day"><div class="day-num">8</div></div><div class="cal-day"><div class="day-num">9</div></div><div class="cal-day"><div class="day-num">10</div></div><div class="cal-day"><div class="day-num">11</div></div><div class="cal-day"><div class="day-num">12</div></div><div class="cal-day"><div class="day-num">13</div></div><div class="cal-day"><div class="day-num">14</div></div><div class="cal-day"><div class="day-num">15</div></div><div class="cal-day"><div class="day-num">16</div></div><div class="cal-day"><div class="day-num">17</div></div><div class="cal-day"><div class="day-num">18</div></div><div class="cal-day"><div class="day-num">19</div></div><div class="cal-day"><div class="day-num">20</div></div><div class="cal-day"><div class="day-num">21</div></div><div class="cal-day"><div class="day-num">22</div></div><div class="cal-day"><div class="day-num">23</div></div><div class="cal-day"><div class="day-num">24</div></div><div class="cal-day"><div class="day-num">25</div></div><div class="cal-day"><div class="day-num">26</div></div><div class="cal-day"><div class="day-num">27</div></div><div class="cal-day"><div class="day-num">28</div></div><div class="cal-day"><div class="day-num">29</div></div><div class="cal-day"><div class="day-num">30</div></div></div></div>
+    <div class="mobile-booking-list"></div>
+
+  </div>
+  <div class="footer">Updated Mar 3, 2026 6:04 PM CST &nbsp;·&nbsp; Fort Walton Beach Golf</div>
+  
+</body>
+</html>

@@ -5,3 +5,4 @@ screenshots/
 *.db
 *.log
 golf-scheduler.log
+public/

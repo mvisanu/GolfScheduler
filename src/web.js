@@ -103,6 +103,29 @@ app.use((req, res, next) => {
   next();
 });
 
+// ── Tracking ping from GitLab Pages static site ──────────────────────────────
+app.get('/api/ping', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+  const ua = req.headers['user-agent'] || '';
+  const ref = req.query.ref || 'unknown';
+  const page = req.query.page || '';
+  if (!isLocalIP(ip)) {
+    const { browser, os, device } = parseUA(ua);
+    const entry = {
+      ts: new Date().toISOString(), ip, method: 'GET', path: `/ping?ref=${ref}`,
+      browser, os, device, ua, referrer: page,
+      country: '…', countryCode: '', region: '', city: '', isp: '', org: '', geoTz: '',
+    };
+    ACCESS_LOG.unshift(entry);
+    if (ACCESS_LOG.length > ACCESS_LOG_MAX) ACCESS_LOG.pop();
+    saveAccessLog();
+    geoLookup(ip, entry);
+    logger.info(`[PING] ${ip} ref=${ref} ${browser}/${os} ${device}`);
+  }
+  res.status(204).end();
+});
+
 // TASK-021: Updated to return { bookings, lastSyncAt }
 app.get('/api/bookings', async (req, res) => {
   const bookings = await db.getAllUpcoming();

@@ -12,7 +12,8 @@
     "init": "node src/index.js init",
     "web": "node src/index.js web",
     "cancel": "node src/index.js cancel",
-    "sync": "node src/index.js sync"
+    "sync": "node src/index.js sync",
+    "generate": "node generate-static.js"
   },
   "dependencies": {
     "acme-client": "^5.4.0",

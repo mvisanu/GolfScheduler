@@ -1,0 +1,19 @@
+# GitLab Pages deployment
+# Deploys the pre-generated public/index.html to GitLab Pages.
+#
+# Workflow:
+#   1. Run: npm run generate   (locally, after npm run sync)
+#   2. git add public/index.html && git commit -m "Update schedule" && git push
+#   3. GitLab Pages auto-deploys at https://<username>.gitlab.io/<project>/
+
+pages:
+  stage: deploy
+  script:
+    - echo "Deploying static schedule to GitLab Pages"
+  artifacts:
+    paths:
+      - public
+  only:
+    - master
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "master"'
