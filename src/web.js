@@ -181,6 +181,60 @@ app.post('/api/book-month', (req, res) => {
   res.json({ success: true, message: 'Booking run started' });
 });
 
+app.post('/api/book-day', async (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
+  if (!isLocalIP(ip)) return res.status(403).json({ success: false, error: 'Forbidden' });
+
+  const { date, targetTime, course, slots } = req.body;
+  if (!date || !targetTime || !course) return res.status(400).json({ success: false, error: 'Missing fields' });
+
+  const numSlots = Math.max(1, Math.min(5, parseInt(slots) || 1));
+  const [h, m] = targetTime.split(':').map(Number);
+
+  const toTime = (totalMin) => {
+    const hh = Math.floor(Math.abs(totalMin) / 60).toString().padStart(2, '0');
+    const mm = (Math.abs(totalMin) % 60).toString().padStart(2, '0');
+    return `${hh}:${mm}`;
+  };
+
+  const dayOfWeek = new Date(date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', timeZone: 'UTC' });
+  const windowStart = toTime(h * 60 + m - 30);
+  const windowEnd = toTime(h * 60 + m + 60);
+
+  const bookingsList = [];
+  for (let i = 0; i < numSlots; i++) {
+    const slotMin = h * 60 + m + i * 10;
+    bookingsList.push({
+      date,
+      dayLabel: `${dayOfWeek} Custom`,
+      targetTime: toTime(slotMin),
+      windowStart,
+      windowEnd,
+      course,
+      slotIndex: i,
+      players: 4,
+    });
+  }
+
+  try {
+    await db.ensureBookings(bookingsList);
+  } catch (err) {
+    logger.error(`book-day DB error: ${err.message}`);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+
+  const { spawn } = require('child_process');
+  const child = spawn('node', ['src/index.js', 'book'], {
+    detached: true,
+    stdio: 'ignore',
+    cwd: path.join(__dirname, '..')
+  });
+  child.unref();
+
+  logger.info(`[WEB] book-day: ${date} ${targetTime} ${course} x${numSlots}`);
+  res.json({ success: true, message: `${numSlots} slot(s) queued for ${date} — booking started` });
+});
+
 // ── Admin access log page (localhost only) ───────────────────────────────────
 app.get('/admin', (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
@@ -443,6 +497,13 @@ app.get('/', async (req, res) => {
     @media (min-width: 640px) {
       .mobile-booking-list { display: none; }
     }
+    /* Book-day modal */
+    .bd-form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+    .bd-label { font-size: 0.85rem; font-weight: 600; color: #555; }
+    .bd-select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.9rem; background: #fff; width: 100%; }
+    .bd-date-display { font-size: 1rem; font-weight: 700; color: var(--text-primary); padding: 6px 0; }
+    .cal-day:not(.empty) { cursor: pointer; }
+    .cal-day:not(.empty):hover { background: #f0fdf4; }
   </style>
 </head>
 <body>
@@ -517,6 +578,54 @@ app.get('/', async (req, res) => {
     <span id="zoom-label">100%</span>
     <button onclick="zoom(1)" aria-label="Increase text size" style="background:none;border:none;color:inherit;cursor:pointer;font-size:18px;">A+</button>
   </div>
+
+  <!-- Book-day modal (admin only) -->
+  ${isAdmin ? `
+  <div class="modal-overlay" id="book-day-overlay" onclick="if(event.target===this)closeBookDayModal()">
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="bd-title">
+      <div class="modal-title" id="bd-title">Book a Tee Time</div>
+      <div class="bd-date-display" id="bd-date-display"></div>
+      <input type="hidden" id="bd-date-input">
+      <div class="bd-form-row">
+        <label class="bd-label" for="bd-time">Target Time</label>
+        <select class="bd-select" id="bd-time">
+          ${(() => {
+            const opts = [];
+            for (let min = 7*60; min <= 15*60; min += 30) {
+              const hh = Math.floor(min/60).toString().padStart(2,'0');
+              const mm = (min%60).toString().padStart(2,'0');
+              const val = hh+':'+mm;
+              const h = Math.floor(min/60);
+              const label = (h%12||12)+':'+(min%60).toString().padStart(2,'0')+' '+(h<12?'AM':'PM');
+              const sel = min===12*60 ? ' selected' : '';
+              opts.push('<option value="'+val+'"'+sel+'>'+label+'</option>');
+            }
+            return opts.join('');
+          })()}
+        </select>
+      </div>
+      <div class="bd-form-row">
+        <label class="bd-label" for="bd-course">Course</label>
+        <select class="bd-select" id="bd-course">
+          <option value="Pines">Pines</option>
+          <option value="Oaks">Oaks</option>
+        </select>
+      </div>
+      <div class="bd-form-row">
+        <label class="bd-label" for="bd-slots">Tee Time Slots (4 players each)</label>
+        <select class="bd-select" id="bd-slots">
+          <option value="1">1 slot — 4 players</option>
+          <option value="2">2 slots — 8 players</option>
+          <option value="3" selected>3 slots — 12 players</option>
+        </select>
+      </div>
+      <div class="modal-msg" id="bd-msg" style="margin-bottom:14px;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-close-modal" onclick="closeBookDayModal()">Close</button>
+        <button class="btn" id="bd-book-btn" style="background:var(--accent-action);color:white;" onclick="submitBookDay()">Book</button>
+      </div>
+    </div>
+  </div>` : ''}
 
   <!-- TASK-019: Modal with role="dialog", aria-modal, aria-labelledby -->
   <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
@@ -628,9 +737,9 @@ app.get('/', async (req, res) => {
       }
     }
 
-    // Calendar chips — pass chip element as trigger
+    // Calendar chips — stop propagation so day-cell click doesn't also fire
     document.querySelectorAll('.booking-chip').forEach(chip => {
-      chip.addEventListener('click', () => openModal(chip.dataset, chip));
+      chip.addEventListener('click', (e) => { e.stopPropagation(); openModal(chip.dataset, chip); });
     });
 
     // Detail table rows — pass row element as trigger
@@ -640,7 +749,7 @@ app.get('/', async (req, res) => {
 
     // Keyboard handling
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') closeModal();
+      if (e.key === 'Escape') { closeModal(); closeBookDayModal(); }
       if (e.ctrlKey && e.key === '=') { e.preventDefault(); zoom(1); }
       if (e.ctrlKey && e.key === '-') { e.preventDefault(); zoom(-1); }
       if (e.ctrlKey && e.key === '0') { e.preventDefault(); baseSize = 16; applyZoom(); }
@@ -787,6 +896,79 @@ app.get('/', async (req, res) => {
     }
 
     setInterval(refreshChips, 60000);
+
+    // ── Book-day modal (admin only) ─────────────────────────────────────────
+    const IS_ADMIN = ${isAdmin};
+    let bookDayTrigger = null;
+
+    function openBookDayModal(dateStr, triggerEl) {
+      const overlay = document.getElementById('book-day-overlay');
+      if (!overlay) return;
+      document.getElementById('bd-date-display').textContent = dateStr;
+      document.getElementById('bd-date-input').value = dateStr;
+      document.getElementById('bd-msg').textContent = '';
+      document.getElementById('bd-msg').style.color = '#555';
+      const btn = document.getElementById('bd-book-btn');
+      btn.disabled = false;
+      btn.textContent = 'Book';
+      overlay.classList.add('open');
+      bookDayTrigger = triggerEl || null;
+      requestAnimationFrame(() => document.getElementById('bd-time').focus());
+    }
+
+    function closeBookDayModal() {
+      const overlay = document.getElementById('book-day-overlay');
+      if (overlay) overlay.classList.remove('open');
+      if (bookDayTrigger && typeof bookDayTrigger.focus === 'function') bookDayTrigger.focus();
+      bookDayTrigger = null;
+    }
+
+    async function submitBookDay() {
+      const date = document.getElementById('bd-date-input').value;
+      const targetTime = document.getElementById('bd-time').value;
+      const course = document.getElementById('bd-course').value;
+      const slots = document.getElementById('bd-slots').value;
+      const btn = document.getElementById('bd-book-btn');
+      const msg = document.getElementById('bd-msg');
+      btn.disabled = true;
+      btn.textContent = 'Booking...';
+      msg.textContent = 'Submitting — this will open a browser window...';
+      msg.style.color = '#888';
+      try {
+        const res = await fetch('/api/book-day', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date, targetTime, course, slots })
+        });
+        const json = await res.json();
+        if (json.success) {
+          msg.textContent = json.message + ' — reloading...';
+          msg.style.color = '#22c55e';
+          setTimeout(() => location.reload(), 2500);
+        } else {
+          msg.textContent = 'Error: ' + (json.error || 'Unknown error');
+          msg.style.color = '#ef4444';
+          btn.disabled = false;
+          btn.textContent = 'Retry';
+        }
+      } catch (e) {
+        msg.textContent = 'Network error — please try again.';
+        msg.style.color = '#ef4444';
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      }
+    }
+
+    // Click on a calendar day cell to open book-day modal (admin only)
+    if (IS_ADMIN) {
+      document.querySelectorAll('.cal-day:not(.empty)').forEach(cell => {
+        cell.addEventListener('click', () => {
+          const dateStr = cell.dataset.date;
+          if (dateStr) openBookDayModal(dateStr, cell);
+        });
+      });
+    }
+
   </script>
 </body>
 </html>`);
@@ -826,7 +1008,7 @@ function generateCalendarHTML(year, month, byDate, buttonLabel = 'Schedule Month
     const isToday = dateStr === todayStr;
     const dayBookings = byDate[dateStr] || [];
 
-    html += `<div class="cal-day${isToday ? ' today' : ''}">`;
+    html += `<div class="cal-day${isToday ? ' today' : ''}" data-date="${dateStr}">`;
     html += `<div class="day-num">${d}</div>`;
 
     for (const b of dayBookings) {

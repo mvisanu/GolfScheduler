@@ -35,7 +35,13 @@ function buildChip(b) {
   if (b.status === 'cancelled' || b.status === 'skipped') return '';
   const time   = b.actual_time || b.target_time;
   const course = b.course || 'Pines';
-  return `<div class="booking-chip chip-${b.status}" title="${b.day_label}">${time} ${course}</div>`;
+  const label  = (b.day_label || '').replace(/"/g, '&quot;');
+  const conf = (b.confirmation_number || '').replace(/"/g, '&quot;');
+  return `<div class="booking-chip chip-${b.status}" ` +
+    `data-date="${b.date}" data-time="${time}" data-course="${course}" ` +
+    `data-status="${b.status}" data-label="${label}" data-slot="${b.slot_index}" data-confirmation="${conf}" ` +
+    `onclick="showDetail(this)" onkeydown="if(event.key==='Enter')showDetail(this)" ` +
+    `role="button" tabindex="0" title="Click for details">${time} ${course}</div>`;
 }
 
 function calendarGrid(year, month, byDate) {
@@ -159,11 +165,26 @@ async function main() {
     .cal-day.empty { background: #f9fafb; }
     .cal-day.today { box-shadow: inset 0 0 0 2px var(--accent-action); }
     .day-num { font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 6px; }
-    .booking-chip { display: block; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px; font-size: 0.8rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .booking-chip { display: block; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px; font-size: 0.8rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: opacity 0.1s, transform 0.1s; }
+    .booking-chip:hover { opacity: 0.85; transform: scale(1.02); }
     .chip-confirmed { background: var(--accent-confirmed); }
     .chip-pending { background: var(--accent-pending); }
     .chip-failed { background: var(--accent-failed); }
     .chip-partial { background: var(--accent-failed); }
+    #detail-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; padding: 20px; }
+    #detail-modal.open { display: flex; }
+    .modal-box { background: #fff; border-radius: 12px; padding: 28px 24px; max-width: 360px; width: 100%; position: relative; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+    .modal-close { position: absolute; top: 12px; right: 16px; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--text-secondary); line-height: 1; padding: 4px; }
+    .modal-close:hover { color: var(--text-primary); }
+    .modal-box h3 { font-family: 'Manrope', sans-serif; font-size: 1.15rem; font-weight: 700; margin-bottom: 18px; padding-right: 24px; }
+    .detail-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+    .detail-row:last-child { border-bottom: none; }
+    .detail-label { color: var(--text-secondary); font-weight: 500; }
+    .detail-badge { padding: 3px 10px; border-radius: 20px; font-size: 0.8rem; font-weight: 600; color: white; }
+    .badge-confirmed { background: var(--accent-confirmed); }
+    .badge-pending { background: var(--accent-pending); }
+    .badge-failed { background: var(--accent-failed); }
+    .badge-partial { background: var(--accent-failed); }
     .mobile-booking-list { display: none; }
     .mobile-booking-card { padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); margin-bottom: 8px; }
     .mobile-booking-card-date { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1rem; margin-bottom: 8px; }
@@ -198,6 +219,63 @@ async function main() {
 
   </div>
   <div class="footer">Updated ${formattedUpdated} CST &nbsp;·&nbsp; Fort Walton Beach Golf</div>
+
+  <div id="detail-modal" onclick="if(event.target===this)closeDetail()">
+    <div class="modal-box">
+      <button class="modal-close" onclick="closeDetail()" aria-label="Close">&times;</button>
+      <h3>⛳ Tee Time Details</h3>
+      <div class="detail-row"><span class="detail-label">Date</span><span id="modal-date"></span></div>
+      <div class="detail-row"><span class="detail-label">Time</span><span id="modal-time"></span></div>
+      <div class="detail-row"><span class="detail-label">Course</span><span id="modal-course"></span></div>
+      <div class="detail-row"><span class="detail-label">Players</span><span id="modal-players">4</span></div>
+      <div class="detail-row" id="modal-window-row"><span class="detail-label">Window</span><span id="modal-window"></span></div>
+      <div class="detail-row" id="modal-conf-row"><span class="detail-label">Confirmation</span><span id="modal-confirmation"></span></div>
+      <div class="detail-row"><span class="detail-label">Status</span><span id="modal-status" class="detail-badge"></span></div>
+    </div>
+  </div>
+
+  <script>
+    const DAY_NAMES   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const STATUS_LABELS = { confirmed: 'Confirmed', pending: 'Pending', failed: 'Failed', partial: 'Partial' };
+
+    function showDetail(el) {
+      const d = el.dataset;
+      const [y, m, day] = d.date.split('-').map(Number);
+      const dateObj = new Date(y, m - 1, day);
+      document.getElementById('modal-date').textContent =
+        DAY_NAMES[dateObj.getDay()] + ', ' + MONTH_NAMES[m - 1] + ' ' + day + ', ' + y;
+      document.getElementById('modal-time').textContent   = d.time;
+      document.getElementById('modal-course').textContent = d.course + ' Course';
+      const statusEl = document.getElementById('modal-status');
+      statusEl.textContent  = STATUS_LABELS[d.status] || d.status;
+      statusEl.className    = 'detail-badge badge-' + d.status;
+      const winRow = document.getElementById('modal-window-row');
+      if (d.label) {
+        document.getElementById('modal-window').textContent = d.label;
+        winRow.style.display = '';
+      } else {
+        winRow.style.display = 'none';
+      }
+      const confRow = document.getElementById('modal-conf-row');
+      const skipConf = ['', 'PENDING', 'EXISTING_RESERVATION', 'CONFIRMED'];
+      if (d.confirmation && !skipConf.includes(d.confirmation)) {
+        document.getElementById('modal-confirmation').textContent = d.confirmation;
+        confRow.style.display = '';
+      } else {
+        confRow.style.display = 'none';
+      }
+      document.getElementById('detail-modal').classList.add('open');
+    }
+
+    function closeDetail() {
+      document.getElementById('detail-modal').classList.remove('open');
+    }
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeDetail();
+    });
+  </script>
   ${trackingSnippet}
 </body>
 </html>`;
