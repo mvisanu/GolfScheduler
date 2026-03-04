@@ -1,5 +1,17 @@
 #!/usr/bin/env node
 const { program } = require('commander');
+const { execFile } = require('child_process');
+const path = require('path');
+
+function generateAndPush() {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [path.join(__dirname, '../generate-static.js')], (err, stdout, stderr) => {
+      if (stdout) process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+      resolve();
+    });
+  });
+}
 
 program
   .name('golf-scheduler')
@@ -15,6 +27,7 @@ program
     const engine = new BookingEngine({ dryRun: opts.dryRun });
     const stats = await engine.run();
     console.log('\nResults:', JSON.stringify(stats, null, 2));
+    if (!opts.dryRun) await generateAndPush();
 
     // After a real booking run, launch the web calendar view
     if (!opts.dryRun && stats.total > 0) {
@@ -149,6 +162,8 @@ program
           logger.error(`[SCHEDULER] Error closing browser session: ${closeErr.message}`);
         }
       }
+
+      await generateAndPush();
 
       const elapsed = Date.now() - startTime.valueOf();
       logger.info(`[SCHEDULER] === Daily job completed in ${elapsed}ms ===`);
@@ -297,6 +312,7 @@ program
     const { runSync } = require('./sync');
     const result = await runSync();
     console.log('Sync complete:', JSON.stringify(result, null, 2));
+    await generateAndPush();
     process.exit(0);
   });
 

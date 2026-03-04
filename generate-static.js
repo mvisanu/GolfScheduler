@@ -21,6 +21,8 @@ const timezone = require('dayjs/plugin/timezone');
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+const { execSync } = require('child_process');
+
 const TZ       = process.env.TIMEZONE || 'America/Chicago';
 const PING_URL = process.env.PING_URL || ''; // e.g. https://fwbgaggle-schedule.duckdns.org:3002/api/ping
 
@@ -33,9 +35,7 @@ function buildChip(b) {
   if (b.status === 'cancelled' || b.status === 'skipped') return '';
   const time   = b.actual_time || b.target_time;
   const course = b.course || 'Pines';
-  const resNum = b.confirmation_number && !/^(EXISTING_RESERVATION|CONFIRMED|access)$/.test(b.confirmation_number)
-    ? ` — #${b.confirmation_number}` : '';
-  return `<div class="booking-chip chip-${b.status}" title="${b.day_label}${resNum}">${time} ${course}${resNum}</div>`;
+  return `<div class="booking-chip chip-${b.status}" title="${b.day_label}">${time} ${course}</div>`;
 }
 
 function calendarGrid(year, month, byDate) {
@@ -205,6 +205,23 @@ async function main() {
   fs.mkdirSync(path.join(__dirname, 'docs'), { recursive: true });
   fs.writeFileSync(path.join(__dirname, 'docs/index.html'), html);
   console.log(`Generated docs/index.html (${confirmed} confirmed, ${pending} pending, ${failed} failed)`);
+
+  // Auto-push to GitHub Pages
+  try {
+    execSync('git add docs/index.html', { cwd: __dirname, stdio: 'pipe' });
+    execSync('git diff --cached --quiet docs/index.html', { cwd: __dirname, stdio: 'pipe' });
+    console.log('No changes to push — schedule unchanged.');
+  } catch {
+    // diff returned non-zero = there are staged changes, commit and push
+    try {
+      execSync('git commit -m "Update schedule"', { cwd: __dirname, stdio: 'pipe' });
+      execSync('git push origin master', { cwd: __dirname, stdio: 'pipe' });
+      console.log('Pushed updated schedule to GitHub Pages.');
+    } catch (pushErr) {
+      console.warn('Warning: could not push to GitHub:', pushErr.message);
+    }
+  }
+
   setTimeout(() => process.exit(0), 200);
 }
 
