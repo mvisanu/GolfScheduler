@@ -23,6 +23,33 @@ function formatTimeLabel(start, end) {
   return `${fmt(start)}-${fmt(end)}`;
 }
 
+/**
+ * Resolve the course for a schedule entry that uses "alternating".
+ *
+ * Parity rule (deterministic by ISO week number):
+ *   even ISO week → Pines
+ *   odd  ISO week → Oaks
+ *
+ * ISO week numbers run 1–53. Week 1 is the week containing the first Thursday
+ * of the year (ISO 8601). The parity flips every week, so consecutive Sundays
+ * always get different courses.
+ *
+ * @param {string} dateStr - Date in 'YYYY-MM-DD' format
+ * @returns {'Pines'|'Oaks'}
+ */
+function resolveAlternatingCourse(dateStr) {
+  // Parse date components directly to avoid any dayjs plugin dependency here.
+  const [year, month, day] = dateStr.split('-').map(Number);
+  // Compute ISO week number using the standard algorithm.
+  const d = new Date(Date.UTC(year, month - 1, day));
+  // Set to nearest Thursday: current date + 4 - current day number (Mon=1…Sun=7)
+  const dayNum = d.getUTCDay() || 7; // convert Sun=0 → 7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const isoWeek = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return isoWeek % 2 === 0 ? 'Pines' : 'Oaks';
+}
+
 const schedule = rawSchedule.map(entry => {
   const dayNum = dayMap[entry.day.toLowerCase()];
   if (dayNum === undefined) {
@@ -35,6 +62,7 @@ const schedule = rawSchedule.map(entry => {
     windowEnd: entry.windowEnd,
     players: entry.players,
     slots: entry.slots,
+    // "alternating" is a sentinel — the actual course is resolved per date in scheduler.js
     preferredCourse: entry.course || 'Pines',
     label: `${entry.day} ${formatTimeLabel(entry.windowStart, entry.windowEnd)}`,
   };
@@ -97,3 +125,4 @@ if (!config.email || !config.password) {
 }
 
 module.exports = config;
+module.exports.resolveAlternatingCourse = resolveAlternatingCourse;

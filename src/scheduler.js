@@ -2,6 +2,7 @@ const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
 const timezone = require('dayjs/plugin/timezone');
 const config = require('./config');
+const { resolveAlternatingCourse } = require('./config');
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -30,13 +31,20 @@ function computeBookingSlots() {
           .second(0)
           .format('HH:mm');
 
+        const dateStr = date.format('YYYY-MM-DD');
+        // Resolve "alternating" sentinel to a concrete course name for this date.
+        // even ISO week → Pines, odd ISO week → Oaks (see resolveAlternatingCourse in config.js)
+        const course = entry.preferredCourse === 'alternating'
+          ? resolveAlternatingCourse(dateStr)
+          : (entry.preferredCourse || 'Pines');
+
         slots.push({
-          date: date.format('YYYY-MM-DD'),
+          date: dateStr,
           dayLabel: entry.label,
           targetTime: slotTime,
           windowStart: entry.windowStart,
           windowEnd: entry.windowEnd,
-          course: entry.preferredCourse || 'Pines',
+          course,
           slotIndex: i,
           players: 4, // always 4 per slot
         });

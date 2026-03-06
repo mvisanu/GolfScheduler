@@ -30,5 +30,13 @@
     "players": 12,
     "slots": 3,
     "course": "Pines"
+  },
+  {
+    "day": "Sunday",
+    "windowStart": "08:00",
+    "windowEnd": "10:00",
+    "players": 12,
+    "slots": 3,
+    "course": "alternating"
   }
 ]
