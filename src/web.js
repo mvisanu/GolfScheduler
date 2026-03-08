@@ -511,10 +511,7 @@ app.get('/', async (req, res) => {
     <h1>Golf Scheduler - Fort Walton Beach</h1>
     <div>
       <div class="stats" id="header-stats">
-        ${bookings.filter(b => b.status === 'confirmed').length} Confirmed |
-        ${bookings.filter(b => b.status === 'pending').length} Pending |
-        ${bookings.filter(b => b.status === 'failed').length} Failed |
-        ${bookings.length} Total
+        ${bookings.filter(b => b.status === 'confirmed').length} Confirmed
       </div>
       <!-- TASK-018: Last synced timestamp -->
       <div class="last-sync" id="last-sync-display">Last synced: ${formattedSync}</div>
@@ -523,9 +520,6 @@ app.get('/', async (req, res) => {
   <div class="container">
     <div class="legend">
       <div class="legend-item"><div class="legend-dot dot-confirmed"></div> Confirmed</div>
-      <div class="legend-item"><div class="legend-dot dot-pending"></div> Pending</div>
-      <div class="legend-item"><div class="legend-dot dot-failed"></div> Failed</div>
-      <div class="legend-item"><div class="legend-dot dot-partial"></div> Partial</div>
     </div>
 
     ${generateCalendarHTML(year, month, byDate, 'Schedule Month', isAdmin)}
@@ -550,11 +544,12 @@ app.get('/', async (req, res) => {
           </tr>
         </thead>
         <tbody>
-          ${bookings.map(b => `
+          ${bookings.filter(b => b.status === 'confirmed').map(b => `
             <tr data-id="${b.id}" data-status="${b.status}" data-date="${b.date}" data-label="${b.day_label}"
                 data-time="${b.actual_time || b.target_time}" data-course="${b.course}"
                 data-confirmation="${b.confirmation_number || ''}"
-                data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}">
+                data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}"
+                data-players="${b.players || 4}">
               <td>${b.date}</td>
               <td>${b.day_label}</td>
               <td>${b.target_time}</td>
@@ -638,6 +633,7 @@ app.get('/', async (req, res) => {
         <span class="modal-label">Confirmed Time</span><span class="modal-value" id="m-confirmed-time"></span>
         <span class="modal-label">Target Time</span>  <span class="modal-value" id="m-target-time"></span>
         <span class="modal-label">Course</span>     <span class="modal-value" id="m-course"></span>
+        <span class="modal-label">Players</span>    <span class="modal-value" id="m-players"></span>
         <span class="modal-label">Status</span>     <span class="modal-value" id="m-status"></span>
         <span class="modal-label">Confirmation</span><span class="modal-value" id="m-confirmation"></span>
       </div>
@@ -666,6 +662,7 @@ app.get('/', async (req, res) => {
       document.getElementById('m-confirmed-time').textContent = data.actualTime || '—';
       document.getElementById('m-target-time').textContent = data.targetTime;
       document.getElementById('m-course').textContent = data.course;
+      document.getElementById('m-players').textContent = data.players ? (data.players + ' players') : '4 players';
       document.getElementById('m-status').textContent = data.status;
       document.getElementById('m-confirmation').textContent = data.confirmation || '-';
       document.getElementById('m-msg').textContent = '';
@@ -865,12 +862,8 @@ app.get('/', async (req, res) => {
         chip.dataset.actualTime = b.actual_time || '';
         chip.dataset.targetTime = b.target_time;
 
-        // Show/hide skipped chips per original logic
-        if (newStatus === 'skipped') {
-          chip.style.display = 'none';
-        } else {
-          chip.style.display = '';
-        }
+        // Only show confirmed chips
+        chip.style.display = newStatus === 'confirmed' ? '' : 'none';
       });
 
       // Update header stats
@@ -1012,7 +1005,7 @@ function generateCalendarHTML(year, month, byDate, buttonLabel = 'Schedule Month
     html += `<div class="day-num">${d}</div>`;
 
     for (const b of dayBookings) {
-      if (b.status === 'cancelled') continue;
+      if (!isRealConfirmed(b)) continue;
       html += buildChipHTML(b, dateStr);
     }
 
@@ -1032,7 +1025,7 @@ function generateCalendarHTML(year, month, byDate, buttonLabel = 'Schedule Month
   html += '<div class="mobile-booking-list">';
   for (let d = 1; d <= daysInMonth; d++) {
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const dayBookings = (byDate[dateStr] || []).filter(b => b.status !== 'cancelled');
+    const dayBookings = (byDate[dateStr] || []).filter(isRealConfirmed);
     if (dayBookings.length === 0) continue;
 
     const dayOfWeek = new Date(year, month, d).getDay();
@@ -1079,6 +1072,11 @@ function generateCalendarHTML(year, month, byDate, buttonLabel = 'Schedule Month
   return html;
 }
 
+// Helper: only show confirmed bookings
+function isRealConfirmed(b) {
+  return b.status === 'confirmed';
+}
+
 // Helper: build a booking chip HTML string (shared by calendar and mobile list)
 function buildChipHTML(b, dateStr) {
   const displayTime = b.actual_time || b.target_time;
@@ -1089,6 +1087,7 @@ function buildChipHTML(b, dateStr) {
       data-label="${b.day_label}" data-time="${displayTime}" data-course="${course}"
       data-confirmation="${b.confirmation_number || ''}"
       data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}"
+      data-players="${b.players || 4}"
       title="${b.day_label} — ${course}${resNum}">${displayTime} ${course}</div>`;
 }
 

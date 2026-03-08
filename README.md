@@ -8,12 +8,12 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 
 ## Features
 
-- **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course
+- **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course; use `"alternating"` to rotate Pines/Oaks each week
 - **Daily sync engine** — scrapes the FWB site reservation history and auto-corrects any mismatches (wrong times, confirmation numbers) in the database
 - **Existing reservation check** — pre-checks the site before booking to skip already-booked slots and prevent double-booking
 - **10-attempt course/time fallback** — 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other
 - **Two-pass slot strategy** — consecutive slots first, then individual fallback
-- **Calendar web view** at `http://localhost:3002` with color-coded booking status, mobile-responsive layout, and admin controls
+- **Calendar web view** at `http://localhost:3002` — shows confirmed bookings; click any chip to see date, time, course, player count, and confirmation number
 - **External access** — share the schedule with your golf group via a public URL (DuckDNS + optional HTTPS)
 - **Admin page** at `/admin` (localhost only) — full access log with visitor IP, country, browser, device, ISP
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
@@ -76,7 +76,7 @@ Each entry:
 - **windowStart / windowEnd** — acceptable time range in 24h format
 - **players** — total golfers needed
 - **slots** — number of tee times (each holds 4 golfers)
-- **course** — preferred course: `"Pines"` or `"Oaks"` (falls back to the other if unavailable)
+- **course** — preferred course: `"Pines"`, `"Oaks"`, or `"alternating"` (rotates Pines/Oaks each week by ISO week parity; falls back to the other course if unavailable)
 
 ### 5. Run
 
@@ -126,10 +126,10 @@ npm run web
 
 Opens a calendar view at **http://localhost:3002** showing:
 - Current and next month calendars
-- Each booked tee time as a color-coded chip (green = confirmed, amber = pending, red = failed, grey/strikethrough = cancelled)
+- Confirmed bookings as green chips (only confirmed entries are shown)
 - **Last synced** timestamp in the header
 - Mobile-responsive: collapses to a card list on small screens
-- Click any chip to open a detail modal
+- Click any chip to open a detail modal with date, time, course, **player count**, status, and confirmation number
 - API endpoint at `GET /api/bookings` returns `{ bookings, lastSyncAt }`
 
 **Admin controls** (localhost only — hidden for external visitors):
