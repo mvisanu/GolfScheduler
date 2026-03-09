@@ -69,9 +69,19 @@ const schedule = rawSchedule.map(entry => {
 });
 
 const config = {
-  // Credentials
+  // Primary credentials (golfer 0)
   email: process.env.GOLF_EMAIL,
   password: process.env.GOLF_PASSWORD,
+
+  // All golfer credentials for round-robin scheduling
+  golfers: (() => {
+    const all = [
+      { email: process.env.GOLF_EMAIL,  password: process.env.GOLF_PASSWORD },
+      { email: process.env.GOLF_EMAIL2, password: process.env.GOLF_PASSWORD2 },
+      { email: process.env.GOLF_EMAIL3, password: process.env.GOLF_PASSWORD3 },
+    ];
+    return all.filter(g => g.email && g.password);
+  })(),
 
   // Timezone
   timezone: process.env.TIMEZONE || 'America/Chicago',

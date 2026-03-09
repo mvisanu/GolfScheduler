@@ -44,7 +44,9 @@ class BookingEngine {
     if (this.dryRun) {
       logger.info('DRY RUN — showing what would be booked:');
       for (const group of groups) {
-        logger.info(`  ${group.date} (${group.dayLabel}): ${group.slots.length} slots`);
+        const gi = group.slots[0]?.golfer_index ?? 0;
+        const golfer = config.golfers[gi] || config.golfers[0];
+        logger.info(`  ${group.date} (${group.dayLabel}): ${group.slots.length} slots [Golfer ${gi + 1}: ${golfer?.email}]`);
         for (const slot of group.slots) {
           logger.info(`    Slot ${slot.slot_index}: ${slot.target_time} — ${slot.players} players (attempt ${slot.attempts + 1})`);
         }
@@ -54,45 +56,86 @@ class BookingEngine {
 
     let stats = { total: pending.length, booked: 0, failed: 0, partial: 0 };
 
-    try {
-      if (!this._sharedSite) {
-        // Own session: init, navigate to trigger login modal, log in, clear cart.
-        await this.site.init();
-        const firstDate = groups[0].date;
-        await this.site.navigateToBooking(config.site.courses.pines.id, firstDate);
-        await this.site.login();
+    if (this._sharedSite) {
+      // Shared-site mode (e.g. sync+book in same session): use provided site for all bookings.
+      try {
+        await this.site.clearCart();
+        for (const group of groups) {
+          try {
+            const result = await this._processGroup(group);
+            stats.booked += result.booked;
+            stats.failed += result.failed;
+            stats.partial += result.partial;
+          } catch (error) {
+            if (error.message.startsWith('BLOCKED')) {
+              notify.alertBlocked({ error: error.message });
+              break;
+            }
+            logger.error(`Error processing ${group.date}: ${error.message}`);
+            for (const slot of group.slots) {
+              await db.markFailed(slot.id, error.message);
+            }
+            stats.failed += group.slots.length;
+          }
+        }
+      } catch (error) {
+        if (error.message.startsWith('BLOCKED')) {
+          notify.alertBlocked({ error: error.message });
+        } else {
+          logger.error(`Fatal error: ${error.message}`);
+        }
       }
-      // Always clear cart before booking (handles stale cart items in both modes).
-      await this.site.clearCart();
-
+    } else {
+      // Per-golfer mode: group date-groups by golfer_index, create a separate session per golfer.
+      const golferGroupsMap = new Map();
       for (const group of groups) {
+        const gi = group.slots[0]?.golfer_index ?? 0;
+        if (!golferGroupsMap.has(gi)) golferGroupsMap.set(gi, []);
+        golferGroupsMap.get(gi).push(group);
+      }
+
+      for (const [golferIndex, golferDateGroups] of golferGroupsMap) {
+        const golfer = config.golfers[golferIndex] || config.golfers[0];
+        logger.info(`Processing ${golferDateGroups.length} date(s) for Golfer ${golferIndex + 1} (${golfer.email})`);
+
+        const site = new SiteAutomation({ email: golfer.email, password: golfer.password });
+        this.site = site;
+
         try {
-          const result = await this._processGroup(group);
-          stats.booked += result.booked;
-          stats.failed += result.failed;
-          stats.partial += result.partial;
+          await site.init();
+          const firstDate = golferDateGroups[0].date;
+          await site.navigateToBooking(config.site.courses.pines.id, firstDate);
+          await site.login();
+          await site.clearCart();
+
+          for (const group of golferDateGroups) {
+            try {
+              const result = await this._processGroup(group);
+              stats.booked += result.booked;
+              stats.failed += result.failed;
+              stats.partial += result.partial;
+            } catch (error) {
+              if (error.message.startsWith('BLOCKED')) {
+                notify.alertBlocked({ error: error.message });
+                break;
+              }
+              logger.error(`Error processing ${group.date}: ${error.message}`);
+              for (const slot of group.slots) {
+                await db.markFailed(slot.id, error.message);
+              }
+              stats.failed += group.slots.length;
+            }
+          }
         } catch (error) {
           if (error.message.startsWith('BLOCKED')) {
             notify.alertBlocked({ error: error.message });
-            break;
+          } else {
+            logger.error(`Fatal error for Golfer ${golferIndex + 1}: ${error.message}`);
           }
-          logger.error(`Error processing ${group.date}: ${error.message}`);
-          for (const slot of group.slots) {
-            await db.markFailed(slot.id, error.message);
-          }
-          stats.failed += group.slots.length;
+        } finally {
+          await site.close();
+          this.site = null;
         }
-      }
-    } catch (error) {
-      if (error.message.startsWith('BLOCKED')) {
-        notify.alertBlocked({ error: error.message });
-      } else {
-        logger.error(`Fatal error: ${error.message}`);
-      }
-    } finally {
-      // Only close the browser when we own the session.
-      if (!this._sharedSite) {
-        await this.site.close();
       }
     }
 

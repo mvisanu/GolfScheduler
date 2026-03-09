@@ -123,6 +123,7 @@ program
       let syncResult = { checked: 0, updated: 0, warnings: 0, errors: 0 };
       let bookingResult = { total: 0, booked: 0, failed: 0, partial: 0 };
 
+      // ── Phase 1: Sync (primary golfer session) ───────────────────────────
       try {
         await site.init();
         await site.navigateToBooking(
@@ -131,7 +132,6 @@ program
         );
         await site.login();
 
-        // ── Phase 1: Sync ────────────────────────────────────────────────────
         try {
           syncResult = await runSync(site);
         } catch (syncErr) {
@@ -142,26 +142,25 @@ program
           `[SCHEDULER] Sync result: checked=${syncResult.checked} updated=${syncResult.updated} ` +
           `warnings=${syncResult.warnings} errors=${syncResult.errors}`
         );
-
-        // ── Phase 2: Book ────────────────────────────────────────────────────
-        try {
-          const engine = new BookingEngine({ site });
-          bookingResult = await engine.run();
-        } catch (bookErr) {
-          logger.error(`[SCHEDULER] Booking phase error: ${bookErr.message}`);
-          bookingResult.failed = (bookingResult.failed || 0) + 1;
-        }
-        logger.info(
-          `[SCHEDULER] Booking result: total=${bookingResult.total} booked=${bookingResult.booked} failed=${bookingResult.failed}`
-        );
-
       } finally {
         try {
           await site.close();
         } catch (closeErr) {
-          logger.error(`[SCHEDULER] Error closing browser session: ${closeErr.message}`);
+          logger.error(`[SCHEDULER] Error closing sync session: ${closeErr.message}`);
         }
       }
+
+      // ── Phase 2: Book (per-golfer sessions managed by BookingEngine) ─────
+      try {
+        const engine = new BookingEngine();
+        bookingResult = await engine.run();
+      } catch (bookErr) {
+        logger.error(`[SCHEDULER] Booking phase error: ${bookErr.message}`);
+        bookingResult.failed = (bookingResult.failed || 0) + 1;
+      }
+      logger.info(
+        `[SCHEDULER] Booking result: total=${bookingResult.total} booked=${bookingResult.booked} failed=${bookingResult.failed}`
+      );
 
       await generateAndPush();
 

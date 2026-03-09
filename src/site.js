@@ -7,7 +7,9 @@ const logger = require('./logger');
 const COURSES = config.site.courses;
 
 class SiteAutomation {
-  constructor() {
+  constructor({ email, password } = {}) {
+    this.email = email || config.email;
+    this.password = password || config.password;
     this.browser = null;
     this.context = null;
     this.page = null;
@@ -140,9 +142,9 @@ class SiteAutomation {
     }
 
     // Fill credentials
-    await emailField.fill(config.email);
-    logger.info(`Email entered: ${config.email}`);
-    logger.debug(`Password length: ${config.password.length}`);
+    await emailField.fill(this.email);
+    logger.info(`Email entered: ${this.email}`);
+    logger.debug(`Password length: ${this.password.length}`);
 
     // Find and fill password
     const passwordSelectors = [
@@ -166,7 +168,7 @@ class SiteAutomation {
       throw new Error('Could not find password input field');
     }
 
-    await passwordField.fill(config.password);
+    await passwordField.fill(this.password);
     logger.info('Password entered');
 
     // Click submit
@@ -873,24 +875,46 @@ class SiteAutomation {
           };
         }
 
-        // Try desired count, then fall back to lower
-        for (let n = desiredCount; n >= 1; n--) {
-          if (golferBtns[n] && !golferBtns[n].disabled) {
-            golferBtns[n].el.click();
-            return { selectedCount: n, found: Object.keys(golferBtns).map(Number) };
+        // Try golfer counts in preferred order: 4, 2, 3, 1
+        const preferenceOrder = [4, 3, 2, 1];
+        for (const count of preferenceOrder) {
+          if (golferBtns[count] && !golferBtns[count].disabled) {
+            golferBtns[count].el.click();
+            return { selectedCount: count, found: Object.keys(golferBtns).map(Number) };
           }
         }
-        return { error: 'All golfer buttons disabled', selectedCount: 1 };
+        // Nothing available
+        const availableCounts = Object.entries(golferBtns)
+          .filter(([, v]) => !v.disabled)
+          .map(([k]) => Number(k));
+        return {
+          error: 'No golfer count available on this tee time',
+          selectedCount: 0,
+          availableCounts,
+          found: Object.keys(golferBtns).map(Number),
+        };
       }, 4);
 
-      if (golferResult.error) {
-        logger.warn(`Golfer selection: ${golferResult.error}`);
+      // If no golfer count could be selected, skip this tee time.
+      if (golferResult.error || golferResult.selectedCount < 1) {
+        const avail = golferResult.availableCounts || [];
+        logger.warn(
+          `Slot ${slotIndex}: ${golferResult.error || 'no spots available'} ` +
+          `(available: [${avail.join(', ')}]) — skipping this tee time`
+        );
         if (golferResult.debug) {
           logger.warn(`Debug — nearby numeric elements: ${JSON.stringify(golferResult.debug)}`);
         }
-      } else {
-        logger.info(`Selected ${golferResult.selectedCount} golfers in modal (buttons found: ${golferResult.found})`);
+        const screenshotPath = await this.screenshot(`slot-${slotIndex}-insufficient-spots`);
+        await this._dismissModals();
+        return {
+          success: false,
+          error: golferResult.error || 'No spots available',
+          screenshotPath,
+        };
       }
+
+      logger.info(`Selected ${golferResult.selectedCount} golfers in modal (buttons found: ${golferResult.found})`);
 
       // Wait for React to process the golfer selection
       await this.page.waitForTimeout(1500);

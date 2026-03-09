@@ -539,6 +539,7 @@ app.get('/', async (req, res) => {
             <th>Course</th>
             <th>Status</th>
             <th>Confirmation</th>
+            <th>Booked By</th>
             <th>Attempts</th>
             <th>Action</th>
           </tr>
@@ -549,7 +550,7 @@ app.get('/', async (req, res) => {
                 data-time="${b.actual_time || b.target_time}" data-course="${b.course}"
                 data-confirmation="${b.confirmation_number || ''}"
                 data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}"
-                data-players="${b.players || 4}">
+                data-players="${b.players || 4}" data-golfer="${b.golfer_index || 0}">
               <td>${b.date}</td>
               <td>${b.day_label}</td>
               <td>${b.target_time}</td>
@@ -558,6 +559,7 @@ app.get('/', async (req, res) => {
               <td>${b.course}</td>
               <td><span class="status-badge badge-${b.status}">${b.status}</span></td>
               <td>${b.confirmation_number || '-'}</td>
+              <td>G${(b.golfer_index || 0) + 1}</td>
               <td>${b.attempts}</td>
               <td>${isAdmin && ['confirmed','pending','failed'].includes(b.status) ? `<button class="btn-cancel-row" aria-label="Cancel reservation for ${b.date}" onclick="event.stopPropagation();openModal(this.closest('tr').dataset)">Cancel</button>` : ''}</td>
             </tr>
@@ -634,6 +636,7 @@ app.get('/', async (req, res) => {
         <span class="modal-label">Target Time</span>  <span class="modal-value" id="m-target-time"></span>
         <span class="modal-label">Course</span>     <span class="modal-value" id="m-course"></span>
         <span class="modal-label">Players</span>    <span class="modal-value" id="m-players"></span>
+        <span class="modal-label">Booked by</span>  <span class="modal-value" id="m-golfer"></span>
         <span class="modal-label">Status</span>     <span class="modal-value" id="m-status"></span>
         <span class="modal-label">Confirmation</span><span class="modal-value" id="m-confirmation"></span>
       </div>
@@ -647,6 +650,12 @@ app.get('/', async (req, res) => {
   </div>
 
   <script>
+    const GOLFERS = ${JSON.stringify(config.golfers.map((g, i) => ({ index: i, label: `Golfer ${i + 1}`, email: g.email })))};
+    function golferLabel(idx) {
+      const g = GOLFERS[parseInt(idx) || 0];
+      return g ? \`\${g.label} (\${g.email})\` : \`Golfer \${(parseInt(idx) || 0) + 1}\`;
+    }
+
     let activeId = null;
     // TASK-019: Reference to element that triggered modal open
     let modalTriggerEl = null;
@@ -663,8 +672,11 @@ app.get('/', async (req, res) => {
       document.getElementById('m-target-time').textContent = data.targetTime;
       document.getElementById('m-course').textContent = data.course;
       document.getElementById('m-players').textContent = data.players ? (data.players + ' players') : '4 players';
+      document.getElementById('m-golfer').textContent = golferLabel(data.golfer);
       document.getElementById('m-status').textContent = data.status;
-      document.getElementById('m-confirmation').textContent = data.confirmation || '-';
+      const conf = data.confirmation;
+      const isReal = conf && /^\d+$/.test(conf);
+      document.getElementById('m-confirmation').textContent = isReal ? conf : '—';
       document.getElementById('m-msg').textContent = '';
       document.getElementById('m-msg').style.color = '#555';
 
@@ -1081,14 +1093,15 @@ function isRealConfirmed(b) {
 function buildChipHTML(b, dateStr) {
   const displayTime = b.actual_time || b.target_time;
   const course = b.course || 'Pines';
+  const gi = b.golfer_index || 0;
   const resNum = b.confirmation_number && !/^(EXISTING_RESERVATION|CONFIRMED|access)$/.test(b.confirmation_number) ? ` — Res #${b.confirmation_number}` : '';
   return `<div class="booking-chip chip-${b.status}"
       data-id="${b.id}" data-status="${b.status}" data-date="${dateStr}"
       data-label="${b.day_label}" data-time="${displayTime}" data-course="${course}"
       data-confirmation="${b.confirmation_number || ''}"
       data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}"
-      data-players="${b.players || 4}"
-      title="${b.day_label} — ${course}${resNum}">${displayTime} ${course}</div>`;
+      data-players="${b.players || 4}" data-golfer="${gi}"
+      title="${b.day_label} — ${course} — G${gi + 1}${resNum}">${displayTime} ${course}</div>`;
 }
 
 async function startServer() {

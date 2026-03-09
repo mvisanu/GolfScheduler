@@ -34,6 +34,7 @@ async function getDb() {
       course TEXT NOT NULL,
       slot_index INTEGER NOT NULL,
       players INTEGER NOT NULL,
+      golfer_index INTEGER NOT NULL DEFAULT 0,
       confirmation_number TEXT,
       screenshot_path TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
@@ -46,9 +47,10 @@ async function getDb() {
     )
   `);
 
-  // Add window columns to existing databases
+  // Add columns to existing databases
   try { db.run(`ALTER TABLE bookings ADD COLUMN window_start TEXT`); } catch (e) { /* column exists */ }
   try { db.run(`ALTER TABLE bookings ADD COLUMN window_end TEXT`); } catch (e) { /* column exists */ }
+  try { db.run(`ALTER TABLE bookings ADD COLUMN golfer_index INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* column exists */ }
 
   db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)`);
@@ -84,8 +86,8 @@ module.exports = {
   async ensureBookings(bookingsList) {
     await getDb();
     const stmt = db.prepare(`
-      INSERT OR IGNORE INTO bookings (date, day_label, target_time, window_start, window_end, course, slot_index, players, status)
-      VALUES ($date, $dayLabel, $targetTime, $windowStart, $windowEnd, $course, $slotIndex, $players, 'pending')
+      INSERT OR IGNORE INTO bookings (date, day_label, target_time, window_start, window_end, course, slot_index, players, golfer_index, status)
+      VALUES ($date, $dayLabel, $targetTime, $windowStart, $windowEnd, $course, $slotIndex, $players, $golferIndex, 'pending')
     `);
     for (const b of bookingsList) {
       stmt.bind({
@@ -97,6 +99,7 @@ module.exports = {
         $course: b.course,
         $slotIndex: b.slotIndex,
         $players: b.players,
+        $golferIndex: b.golferIndex || 0,
       });
       stmt.step();
       stmt.reset();

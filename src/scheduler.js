@@ -14,6 +14,9 @@ dayjs.extend(timezone);
 function computeBookingSlots() {
   const now = dayjs().tz(config.timezone);
   const slots = [];
+  const numGolfers = config.golfers.length || 1;
+  let golferCounter = 0;
+  const dateGolferMap = {};
 
   for (let offset = 0; offset <= config.horizonDays; offset++) {
     const date = now.add(offset, 'day');
@@ -21,6 +24,15 @@ function computeBookingSlots() {
 
     for (const entry of config.schedule) {
       if (entry.day !== dayOfWeek) continue;
+
+      const dateStr = date.format('YYYY-MM-DD');
+
+      // Assign golfer round-robin per unique booking date
+      if (!(dateStr in dateGolferMap)) {
+        dateGolferMap[dateStr] = golferCounter % numGolfers;
+        golferCounter++;
+      }
+      const golferIndex = dateGolferMap[dateStr];
 
       for (let i = 0; i < entry.slots; i++) {
         // Target time offsets from window start (each slot ~10 min apart)
@@ -31,7 +43,6 @@ function computeBookingSlots() {
           .second(0)
           .format('HH:mm');
 
-        const dateStr = date.format('YYYY-MM-DD');
         // Resolve "alternating" sentinel to a concrete course name for this date.
         // even ISO week → Pines, odd ISO week → Oaks (see resolveAlternatingCourse in config.js)
         const course = entry.preferredCourse === 'alternating'
@@ -47,6 +58,7 @@ function computeBookingSlots() {
           course,
           slotIndex: i,
           players: 4, // always 4 per slot
+          golferIndex,
         });
       }
     }
