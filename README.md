@@ -8,12 +8,14 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 
 ## Features
 
+- **Golfer rotation** — supports up to 3 GolfID accounts (`GOLF_EMAIL`, `GOLF_EMAIL2`, `GOLF_EMAIL3`); alternates which account books each day round-robin so no single account bears the full load
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course; use `"alternating"` to rotate Pines/Oaks each week
 - **Daily sync engine** — scrapes the FWB site reservation history and auto-corrects any mismatches (wrong times, confirmation numbers) in the database
 - **Existing reservation check** — pre-checks the site before booking to skip already-booked slots and prevent double-booking
+- **Strict 4-player enforcement** — skips any tee time that doesn't have 4 open spots rather than booking with fewer golfers
 - **10-attempt course/time fallback** — 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other
 - **Two-pass slot strategy** — consecutive slots first, then individual fallback
-- **Calendar web view** at `http://localhost:3002` — shows confirmed bookings; click any chip to see date, time, course, player count, and confirmation number
+- **Calendar web view** at `http://localhost:3002` — shows confirmed bookings; click any chip to see date, time, course, player count, **which golfer account booked it**, and confirmation number
 - **External access** — share the schedule with your golf group via a public URL (DuckDNS + optional HTTPS)
 - **Admin page** at `/admin` (localhost only) — full access log with visitor IP, country, browser, device, ISP
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
@@ -44,7 +46,18 @@ npx playwright install chromium
 cp .env.example .env
 ```
 
-Edit `.env` and set your `GOLF_EMAIL` and `GOLF_PASSWORD`.
+Edit `.env` and set your GolfID credentials. You can add up to three accounts for golfer rotation:
+
+```
+GOLF_EMAIL=primary@example.com
+GOLF_PASSWORD=secret1
+GOLF_EMAIL2=second@example.com
+GOLF_PASSWORD2=secret2
+GOLF_EMAIL3=third@example.com
+GOLF_PASSWORD3=secret3
+```
+
+Each unique booking date is assigned to one account round-robin (all slots for the same date use the same account). Only `GOLF_EMAIL` / `GOLF_PASSWORD` are required; add the others to enable rotation.
 
 ### 4. Configure schedule
 
@@ -129,7 +142,7 @@ Opens a calendar view at **http://localhost:3002** showing:
 - Confirmed bookings as green chips (only confirmed entries are shown)
 - **Last synced** timestamp in the header
 - Mobile-responsive: collapses to a card list on small screens
-- Click any chip to open a detail modal with date, time, course, **player count**, status, and confirmation number
+- Click any chip to open a detail modal with date, time, course, **player count**, **which golfer account booked it**, status, and confirmation number
 - API endpoint at `GET /api/bookings` returns `{ bookings, lastSyncAt }`
 
 **Admin controls** (localhost only — hidden for external visitors):
@@ -264,8 +277,12 @@ GolfScheduler/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GOLF_EMAIL` | required | GolfID login email |
-| `GOLF_PASSWORD` | required | GolfID login password |
+| `GOLF_EMAIL` | required | Primary GolfID login email |
+| `GOLF_PASSWORD` | required | Primary GolfID login password |
+| `GOLF_EMAIL2` | — | Second GolfID email (golfer rotation) |
+| `GOLF_PASSWORD2` | — | Second GolfID password |
+| `GOLF_EMAIL3` | — | Third GolfID email (golfer rotation) |
+| `GOLF_PASSWORD3` | — | Third GolfID password |
 | `TIMEZONE` | `America/Chicago` | Local timezone for scheduling |
 | `BOOKING_HORIZON_DAYS` | `30` | How many days ahead to book |
 | `FALLBACK_MINUTES` | `30` | Max deviation from target tee time |
@@ -287,6 +304,7 @@ GolfScheduler/
 | Login form | `src/site.js` → `login()` |
 | Course selector | `src/site.js` → `selectCourse()` |
 | Tee time display | `src/site.js` → `getAvailableTeeTimes()` |
+| Golfer count buttons | `src/site.js` → `bookSlot()` (looks for 1/2/3/4 radio buttons) |
 | Booking modal | `src/site.js` → `bookSlot()` |
 | Checkout flow | `src/site.js` → `completeCheckout()` |
 | Reservations page | `src/site.js` → `getExistingReservations()` |
@@ -303,6 +321,8 @@ GolfScheduler/
 | No tee times found | Check `./screenshots/`; date may not have slots open yet |
 | Playwright browser missing | Run `npx playwright install chromium` |
 | BLOCKED alert | Stop the bot, check the site manually, do not retry automatically |
+| Golfer login rejected | Verify `GOLF_EMAIL2`/`GOLF_PASSWORD2` credentials — account must be registered on teeitup.golf |
+| Only 1–3 spots available | Bot skips those tee times (strict 4-player enforcement); try another time or run `npm run book` again later |
 | Sync finds nothing beyond 7 days | Site only shows upcoming reservations within ~7 days |
 | HTTPS cert warning | Self-signed cert — click Advanced → Proceed once per browser |
 | `get-cert.js` fails with SERVFAIL | DuckDNS nameservers are flaky — try again later |
