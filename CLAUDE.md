@@ -97,7 +97,9 @@ SQLite via sql.js. Schema in `db.js`. Status values: `pending`, `confirmed`, `fa
 
 - **cancel-rebook.js** — One-time script (project root). Logs in as golfer 0, scrapes all site reservations from `FROM_DATE` onward (currently `2026-03-16`), cancels each on the site, then runs `BookingEngine()` to re-book using the alternating golfer rotation. Run with `node cancel-rebook.js`.
 - **cancel-and-rebook.js** — Variant of cancel-rebook.js. Reads confirmed bookings from the DB (filters to real numeric confirmation numbers), cancels them via `site.cancelReservations()`, purges ALL DB rows ≥ `FROM_DATE` (currently `2026-03-16`), then prints instructions to run `npm run init && npm run book`.
-- **fix-confirmations.js** — One-off script that visits the site's Reservations page for each confirmed booking with a placeholder confirmation number (EXISTING_RESERVATION, "access", CONFIRMED) and updates the DB with the real number. Limited by the ~7-day site window for upcoming reservations.
+- **fix-confirmations.js** — Loops through all 3 golfer accounts, logs into each, visits their Reservations page, and updates the DB with real confirmation numbers for any confirmed booking still carrying a placeholder (`EXISTING_RESERVATION`, `access`, `CONFIRMED`). Limited by the ~7-day site window. Run with `node fix-confirmations.js`.
+- **delete-slot0.js** — One-time cleanup script that deletes all `slot_index = 0` rows from the database. Uses sql.js directly (no db.js dependency). Run with `node delete-slot0.js`.
+- **reset-failed.js** — Resets over-retried failed slots (`attempts > maxRetries`) back to `pending` (attempts=0) from `2026-03-16` onward. Also resets confirmed rows with `EXISTING_RESERVATION` placeholders. Run with `node reset-failed.js`.
 - **get-cert.js** — Obtains a trusted Let's Encrypt certificate via DuckDNS DNS-01 challenge. Requires `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` in `.env`. Saves cert to `data/certs/cert.pem` and `data/certs/key.pem`. Re-run every ~60 days to renew before 90-day expiry. Account key cached at `data/certs/account-key.pem`.
 
 Note: `sync-reservations.js`, `update-saturdays.js`, and `find-saturdays.js` have been removed from the project root. Their functionality is now provided by `npm run sync` (`src/sync.js`).
@@ -146,6 +148,6 @@ DUCKDNS_DOMAIN                 # DuckDNS subdomain (without .duckdns.org) — us
 - **Cancel endpoint db-singleton race** (RESOLVED): `getAllUpcoming()` in `db.js` was replacing the module-level `db` singleton with a fresh disk snapshot, causing stale state in the cancel endpoint. Fixed by using a local `freshDb` without touching the singleton.
 - **Sunday slots spec delta** (P3): `schedule.json` has 3 slots/Sunday; `booking.md` specifies 4 slots. Intentional or undocumented — verify before changing.
 - **`reconcileDate()` has zero test coverage** (P3): Pure logic in `src/reconcile.js` — high value target for unit tests.
-- **`index.js` opens browser at port 3000** (P3): Web server runs on 3002 (`index.js:39` opens wrong port).
+- **`index.js` opens browser at port 3000** (P3): Web server runs on 3009 (`index.js:39` opens wrong port).
 - **`generate-static.js` called silently** (P3): Invoked after every booking/sync/scheduler run; errors swallowed; not documented in specs.
 - **`isLocalIP('172.')` too broad** (P3): Matches more than RFC 1918 `172.16.0.0/12`; affects admin endpoint access control.

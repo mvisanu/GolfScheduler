@@ -15,7 +15,7 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 - **Strict 4-player enforcement** — skips any tee time that doesn't have 4 open spots rather than booking with fewer golfers
 - **10-attempt course/time fallback** — 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other
 - **Two-pass slot strategy** — consecutive slots first, then individual fallback
-- **Calendar web view** at `http://localhost:3002` — shows confirmed bookings; click any chip to see date, time, course, player count, **which golfer account booked it**, and confirmation number
+- **Calendar web view** at `http://localhost:3009` — shows confirmed bookings (slot_index ≥ 1); click any chip to see date, time, course, player count, **which golfer account booked it** (full email shown), and confirmation number
 - **External access** — share the schedule with your golf group via a public URL (DuckDNS + optional HTTPS)
 - **Admin page** at `/admin` (localhost only) — full access log with visitor IP, country, browser, device, ISP
 - **SQLite state tracking** prevents double-bookings (unique constraint on date + time + slot)
@@ -106,7 +106,7 @@ npm run book
 # Check booking status in terminal
 npm run status
 
-# Calendar web view (http://localhost:3002)
+# Calendar web view (http://localhost:3009)
 npm run web
 
 # Initialize database without booking
@@ -137,7 +137,7 @@ Shows a table of all upcoming bookings with date, day, time, slot, course, statu
 npm run web
 ```
 
-Opens a calendar view at **http://localhost:3002** showing:
+Opens a calendar view at **http://localhost:3009** showing:
 - Current and next month calendars
 - Confirmed bookings as green chips (only confirmed entries are shown)
 - **Last synced** timestamp in the header
@@ -248,6 +248,9 @@ Each tee time is checked out individually:
 ```
 GolfScheduler/
 ├── schedule.json         # Configurable booking schedule
+├── fix-confirmations.js  # Fetch real confirmation numbers for all 3 golfer accounts
+├── reset-failed.js       # Reset over-retried failed slots back to pending
+├── delete-slot0.js       # One-time cleanup — remove slot_index=0 rows from DB
 ├── get-cert.js           # Let's Encrypt cert via DuckDNS DNS challenge
 ├── src/
 │   ├── index.js          # CLI entry point (commander)
@@ -258,7 +261,7 @@ GolfScheduler/
 │   ├── site.js           # Playwright browser automation
 │   ├── sync.js           # DB/site sync engine
 │   ├── reconcile.js      # Per-date reconciliation logic
-│   ├── web.js            # Express calendar web view (port 3002)
+│   ├── web.js            # Express calendar web view (port 3009)
 │   ├── notify.js         # Alert/notification module
 │   └── logger.js         # Winston logging
 ├── data/
@@ -326,4 +329,4 @@ GolfScheduler/
 | Sync finds nothing beyond 7 days | Site only shows upcoming reservations within ~7 days |
 | HTTPS cert warning | Self-signed cert — click Advanced → Proceed once per browser |
 | `get-cert.js` fails with SERVFAIL | DuckDNS nameservers are flaky — try again later |
-| External URL not reachable | Check router port forwarding points to correct local IP:3002 |
+| External URL not reachable | Check router port forwarding points to correct local IP:3009 |
