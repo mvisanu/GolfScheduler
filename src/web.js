@@ -15,7 +15,7 @@ const https = require('https');
 const fs = require('fs');
 const app = express();
 app.use(express.json());
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT || 3009;
 
 // ── Access log store (persisted to data/access-log.json) ─────────────────────
 const ACCESS_LOG_PATH = path.join(__dirname, '../data/access-log.json');
@@ -134,8 +134,8 @@ app.get('/api/bookings', async (req, res) => {
 });
 
 app.post('/api/cancel/:id', async (req, res) => {
-  const id = parseInt(req.params.id);
-  if (isNaN(id)) return res.status(400).json({ success: false, error: 'Invalid ID' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ success: false, error: 'Invalid ID' });
 
   const booking = await db.getBookingById(id);
   if (!booking) return res.status(404).json({ success: false, error: 'Booking not found' });
@@ -243,72 +243,102 @@ app.get('/admin', (req, res) => {
   const rows = ACCESS_LOG.map(e => `
     <tr>
       <td>${dayjs(e.ts).tz(config.timezone).format('YYYY-MM-DD HH:mm:ss')}</td>
-      <td><span class="ip">${e.ip}</span></td>
+      <td><span class="ip-chip">${e.ip}</span></td>
       <td>${e.countryCode ? `<img src="https://flagcdn.com/16x12/${e.countryCode.toLowerCase()}.png" alt="${e.countryCode}" title="${e.country}"> ` : ''}${e.city || '…'}${e.region ? ', ' + e.region : ''}, ${e.country || '…'}</td>
       <td>${e.isp || '…'}</td>
-      <td><span class="badge badge-${e.device.toLowerCase()}">${e.device}</span></td>
+      <td><span class="badge badge-device-${e.device.toLowerCase()}">${e.device}</span></td>
       <td>${e.browser}</td>
       <td>${e.os}</td>
-      <td><span class="method method-${e.method}">${e.method}</span> ${e.path}</td>
-      <td class="ua" title="${e.ua.replace(/"/g, '&quot;')}">${e.ua.substring(0, 60)}${e.ua.length > 60 ? '…' : ''}</td>
+      <td><span class="badge badge-method-${e.method.toLowerCase()}">${e.method}</span> ${e.path}</td>
+      <td class="ua-cell" title="${e.ua.replace(/"/g, '&quot;')}">${e.ua.substring(0, 60)}${e.ua.length > 60 ? '…' : ''}</td>
     </tr>`).join('');
 
   res.send(`<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Access Log — GolfScheduler Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@700;800&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --background: #f9fafb;
+    --card: #ffffff;
+    --card-foreground: #111827;
+    --primary: #14532d;
+    --primary-foreground: #ffffff;
+    --secondary: #f3f4f6;
+    --secondary-foreground: #374151;
+    --muted: #f3f4f6;
+    --muted-foreground: #6b7280;
+    --border: #e5e7eb;
+    --ring: #14532d;
+    --radius: 0.625rem;
+    --destructive: #dc2626;
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-display: 'Manrope', sans-serif;
+  }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'Inter',sans-serif;background:#F8F9FA;color:#1A1A1A;font-size:0.88rem}
-  header{background:#1B3A2D;color:#fff;padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
-  header h1{font-family:'Manrope',sans-serif;font-size:1.3rem;font-weight:800}
-  header span{font-size:0.8rem;opacity:0.75}
-  .container{padding:20px 24px}
-  .stats{display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap}
-  .stat{background:#fff;border:1px solid #E5E7EB;border-radius:8px;padding:12px 20px;min-width:120px}
-  .stat-label{font-size:0.75rem;color:#6B7280;text-transform:uppercase;letter-spacing:.04em}
-  .stat-value{font-size:1.6rem;font-weight:700;font-family:'Manrope',sans-serif;color:#1B3A2D}
-  .table-wrap{overflow-x:auto;background:#fff;border:1px solid #E5E7EB;border-radius:8px}
+  body{font-family:var(--font-sans);background:var(--background);color:var(--card-foreground);font-size:0.875rem;line-height:1.5}
+  /* Header */
+  .site-header{background:var(--primary);color:var(--primary-foreground);padding:16px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .site-header h1{font-family:var(--font-display);font-size:1.25rem;font-weight:800;letter-spacing:-0.02em}
+  .site-header .header-meta{font-size:0.78rem;opacity:0.75;text-align:right}
+  /* Container */
+  .container{padding:24px;max-width:1400px;margin:0 auto}
+  /* Stats grid */
+  .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:20px}
+  .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+  .stat-label{font-size:0.72rem;font-weight:600;color:var(--muted-foreground);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+  .stat-value{font-size:1.75rem;font-weight:800;font-family:var(--font-display);color:var(--primary);line-height:1}
+  /* Refresh notice */
+  .refresh-notice{font-size:0.78rem;color:var(--muted-foreground);margin-bottom:14px;padding:8px 12px;background:var(--muted);border-radius:calc(var(--radius) - 2px);display:inline-block}
+  /* Table card */
+  .table-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06)}
+  .table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
   table{width:100%;border-collapse:collapse;min-width:900px}
-  th{background:#1B3A2D;color:#fff;padding:10px 12px;text-align:left;font-size:0.78rem;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
-  td{padding:8px 12px;border-bottom:1px solid #F3F4F6;vertical-align:middle;white-space:nowrap}
-  tr:last-child td{border-bottom:none}
-  tr:hover td{background:#F0FDF4}
-  .ip{font-family:monospace;font-size:0.85rem;background:#F3F4F6;padding:2px 6px;border-radius:4px}
-  .badge{padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;color:#fff}
-  .badge-mobile{background:#7C3AED}
-  .badge-tablet{background:#0891B2}
-  .badge-desktop{background:#2D6A4F}
-  .method{padding:2px 6px;border-radius:4px;font-size:0.75rem;font-weight:700;font-family:monospace}
-  .method-GET{background:#DCFCE7;color:#166534}
-  .method-POST{background:#DBEAFE;color:#1E40AF}
-  .ua{max-width:200px;overflow:hidden;text-overflow:ellipsis;color:#6B7280;font-size:0.78rem}
-  .empty{text-align:center;padding:40px;color:#6B7280}
-  .refresh{font-size:0.8rem;color:#6B7280;margin-bottom:10px}
+  thead tr{background:var(--primary)}
+  thead th{color:var(--primary-foreground);padding:10px 14px;text-align:left;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,0.1)}
+  tbody tr{border-bottom:1px solid var(--border);transition:background 0.1s}
+  tbody tr:last-child{border-bottom:none}
+  tbody tr:hover{background:#f0fdf4}
+  td{padding:9px 14px;vertical-align:middle;white-space:nowrap;font-size:0.82rem}
+  /* Inline badges */
+  .badge{display:inline-flex;align-items:center;padding:2px 9px;border-radius:9999px;font-size:0.72rem;font-weight:600;white-space:nowrap}
+  .badge-device-mobile{background:#f3e8ff;color:#6b21a8}
+  .badge-device-tablet{background:#e0f2fe;color:#0369a1}
+  .badge-device-desktop{background:#dcfce7;color:#15803d}
+  .badge-method-get{background:#dcfce7;color:#166534;font-family:monospace}
+  .badge-method-post{background:#dbeafe;color:#1e40af;font-family:monospace}
+  .badge-method-other{background:var(--muted);color:var(--muted-foreground);font-family:monospace}
+  /* IP chip */
+  .ip-chip{font-family:monospace;font-size:0.8rem;background:var(--secondary);color:var(--secondary-foreground);padding:2px 7px;border-radius:4px;border:1px solid var(--border)}
+  /* UA truncated */
+  .ua-cell{max-width:200px;overflow:hidden;text-overflow:ellipsis;color:var(--muted-foreground);font-size:0.75rem}
+  .empty-row td{text-align:center;padding:48px;color:var(--muted-foreground);font-size:0.9rem}
 </style>
 <script>setTimeout(()=>location.reload(),30000)</script>
 </head><body>
-<header>
+<header class="site-header">
   <h1>Access Log</h1>
-  <span>fwbgaggle-schedule.duckdns.org — Admin Only</span>
+  <div class="header-meta">fwbgaggle-schedule.duckdns.org &mdash; Admin Only</div>
 </header>
 <div class="container">
-  <div class="stats">
-    <div class="stat"><div class="stat-label">Total Visits</div><div class="stat-value">${ACCESS_LOG.length}</div></div>
-    <div class="stat"><div class="stat-label">Unique IPs</div><div class="stat-value">${new Set(ACCESS_LOG.map(e=>e.ip)).size}</div></div>
-    <div class="stat"><div class="stat-label">Mobile</div><div class="stat-value">${ACCESS_LOG.filter(e=>e.device==='Mobile').length}</div></div>
-    <div class="stat"><div class="stat-label">Countries</div><div class="stat-value">${new Set(ACCESS_LOG.map(e=>e.countryCode).filter(Boolean)).size}</div></div>
+  <div class="stats-grid">
+    <div class="stat-card"><div class="stat-label">Total Visits</div><div class="stat-value">${ACCESS_LOG.length}</div></div>
+    <div class="stat-card"><div class="stat-label">Unique IPs</div><div class="stat-value">${new Set(ACCESS_LOG.map(e=>e.ip)).size}</div></div>
+    <div class="stat-card"><div class="stat-label">Mobile</div><div class="stat-value">${ACCESS_LOG.filter(e=>e.device==='Mobile').length}</div></div>
+    <div class="stat-card"><div class="stat-label">Countries</div><div class="stat-value">${new Set(ACCESS_LOG.map(e=>e.countryCode).filter(Boolean)).size}</div></div>
   </div>
-  <div class="refresh">Auto-refreshes every 30 seconds &nbsp;·&nbsp; Showing last ${ACCESS_LOG.length} of max ${ACCESS_LOG_MAX} entries</div>
-  <div class="table-wrap">
-    <table>
-      <thead><tr>
-        <th>Time (CST)</th><th>IP Address</th><th>Location</th><th>ISP</th>
-        <th>Device</th><th>Browser</th><th>OS</th><th>Request</th><th>User Agent</th>
-      </tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" class="empty">No external visits yet</td></tr>'}</tbody>
-    </table>
+  <div class="refresh-notice">Auto-refreshes every 30 s &nbsp;&middot;&nbsp; Showing last ${ACCESS_LOG.length} of max ${ACCESS_LOG_MAX} entries</div>
+  <div class="table-card">
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Time (CST)</th><th>IP Address</th><th>Location</th><th>ISP</th>
+          <th>Device</th><th>Browser</th><th>OS</th><th>Request</th><th>User Agent</th>
+        </tr></thead>
+        <tbody>${rows || '<tr class="empty-row"><td colspan="9">No external visits yet</td></tr>'}</tbody>
+      </table>
+    </div>
   </div>
 </div>
 </body></html>`);
@@ -323,6 +353,7 @@ app.get('/', async (req, res) => {
   // Group bookings by date
   const byDate = {};
   for (const b of bookings) {
+    if (b.slot_index === 0) continue;
     if (!byDate[b.date]) byDate[b.date] = [];
     byDate[b.date].push(b);
   }
@@ -349,144 +380,543 @@ app.get('/', async (req, res) => {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <style>
-    /* TASK-013: Design tokens */
+    /* shadcn/ui-inspired design tokens */
     :root {
-      --bg-page: #F8F9FA;
-      --bg-card: #FFFFFF;
-      --bg-header: #1B3A2D;
-      --text-primary: #1A1A1A;
-      --text-secondary: #6B7280;
-      --accent-confirmed: #2D6A4F;
-      --accent-pending: #B45309;
-      --accent-failed: #DC2626;
-      --accent-cancelled: #9CA3AF;
-      --accent-action: #1B3A2D;
-      --border: #E5E7EB;
+      --background:         #f9fafb;
+      --card:               #ffffff;
+      --card-foreground:    #111827;
+      --primary:            #14532d;
+      --primary-hover:      #0f3d21;
+      --primary-foreground: #ffffff;
+      --secondary:          #f3f4f6;
+      --secondary-foreground:#374151;
+      --muted:              #f3f4f6;
+      --muted-foreground:   #6b7280;
+      --accent:             #f0fdf4;
+      --border:             #e5e7eb;
+      --ring:               #14532d;
+      --radius:             0.625rem;
+      --radius-sm:          0.375rem;
+      --shadow-sm:          0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.05);
+      --shadow-md:          0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.05);
+      --shadow-xl:          0 20px 48px rgba(0,0,0,0.18), 0 8px 16px rgba(0,0,0,0.08);
+
+      /* Status colours */
+      --status-confirmed:   #15803d;
+      --status-confirmed-bg:#dcfce7;
+      --status-pending:     #b45309;
+      --status-pending-bg:  #fef3c7;
+      --status-failed:      #dc2626;
+      --status-failed-bg:   #fee2e2;
+      --status-cancelled:   #6b7280;
+      --status-cancelled-bg:#f3f4f6;
+      --status-partial:     #dc2626;
+      --status-partial-bg:  #fee2e2;
+
+      --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-display: 'Manrope', sans-serif;
     }
 
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    /* TASK-013: No horizontal overflow at 375px */
-    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg-page); color: var(--text-primary); line-height: 1.5; font-size: 16px; max-width: 100%; overflow-x: hidden; }
-    img, table, .calendar { max-width: 100%; }
-
-    .header { background: var(--bg-header); color: white; padding: 20px 30px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-    .header h1 { font-family: 'Manrope', sans-serif; font-size: 1.5rem; font-weight: 800; letter-spacing: -0.02em; }
-    .header .stats { font-size: 0.9rem; opacity: 0.9; }
-    /* TASK-018: Last synced style */
-    .last-sync { font-size: 0.8rem; opacity: 0.75; margin-top: 2px; }
-    .container { max-width: 1200px; margin: 20px auto; padding: 0 20px; }
-    .legend { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
-    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.875rem; }
-    .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
-    .dot-confirmed { background: var(--accent-confirmed); }
-    .dot-pending { background: var(--accent-pending); }
-    .dot-failed { background: var(--accent-failed); }
-    .dot-partial { background: var(--accent-failed); }
-    .dot-empty { background: var(--border); }
-    .calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; background: #ddd; border-radius: 8px; overflow: hidden; }
-    .cal-header { background: var(--bg-header); color: white; padding: 10px; text-align: center; font-weight: 600; font-size: 0.875rem; }
-    .cal-day { background: var(--bg-card); min-height: 120px; padding: 8px; position: relative; }
-    .cal-day.empty { background: #f9fafb; }
-    .cal-day.today { box-shadow: inset 0 0 0 2px var(--accent-action); }
-    .day-num { font-weight: 600; font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 6px; }
-    .booking-chip { display: block; padding: 3px 6px; margin-bottom: 3px; border-radius: 4px; font-size: 0.8rem; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-    .chip-confirmed { background: var(--accent-confirmed); }
-    .chip-pending { background: var(--accent-pending); }
-    .chip-failed { background: var(--accent-failed); }
-    .chip-partial { background: var(--accent-failed); }
-    .chip-skipped { background: var(--accent-cancelled); display: none; }
-    .chip-cancelled { background: var(--text-secondary); text-decoration: line-through; }
-    .month-nav { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
-    .month-nav h2 { font-family: 'Manrope', sans-serif; font-size: 1.3rem; font-weight: 700; letter-spacing: -0.02em; }
-    /* TASK-020: Use var(--accent-action) for nav buttons */
-    .month-nav button { background: var(--accent-action); color: white; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }
-    .month-nav button:hover:not(:disabled) { background: #14291f; }
-    .month-nav button:disabled { opacity: 0.7; cursor: not-allowed; }
-    .month-nav button:focus-visible { outline: 2px solid var(--accent-confirmed); outline-offset: 2px; }
-    .btn-schedule-month { margin-left: 8px; }
-    /* TASK-017: Scrollable table wrapper */
-    .table-scroll-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-    .detail-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
-    .detail-table th { background: var(--bg-header); color: white; padding: 10px 12px; text-align: left; font-size: 0.875rem; min-width: 80px; white-space: nowrap; }
-    .detail-table td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 0.875rem; min-width: 80px; white-space: nowrap; }
-    .detail-table tr[data-id] { cursor: pointer; }
-    .detail-table tr[data-id]:hover { background: #f0fdf4; }
-    .status-badge { padding: 2px 8px; border-radius: 10px; font-size: 0.8rem; color: white; }
-    .badge-confirmed { background: var(--accent-confirmed); }
-    .badge-pending { background: var(--accent-pending); }
-    .badge-failed { background: var(--accent-failed); }
-    .badge-partial { background: var(--accent-failed); }
-    .badge-cancelled { background: var(--text-secondary); }
-    /* Modal */
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
-    .modal-overlay.open { display: flex; }
-    /* TASK-019: ARIA roles added in HTML below */
-    .modal-box { background: var(--bg-card); border-radius: 10px; padding: 28px; max-width: 420px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-    .modal-title { font-family: 'Manrope', sans-serif; font-size: 1.1rem; font-weight: 700; margin-bottom: 16px; color: #111; letter-spacing: -0.01em; }
-    .modal-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 8px; font-size: 0.9rem; margin-bottom: 18px; }
-    .modal-label { color: #666; font-weight: 500; }
-    .modal-value { color: #222; font-weight: 600; }
-    .modal-msg { font-size: 0.875rem; min-height: 20px; margin-bottom: 14px; }
-    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
-    /* TASK-015: min-height 44px on modal buttons */
-    .btn { border: none; padding: 9px 18px; border-radius: 5px; cursor: pointer; font-size: 0.9rem; font-weight: 600; min-height: 44px; }
-    .btn-cancel-res { background: var(--accent-failed); color: white; }
-    .btn-cancel-res:hover:not(:disabled) { background: #b91c1c; }
-    .btn-cancel-res:disabled { background: var(--accent-cancelled); cursor: not-allowed; }
-    .btn-close-modal { background: var(--border); color: #333; }
-    .btn-close-modal:hover { background: #d1d5db; }
-    .btn-cancel-row { background: var(--accent-failed); color: white; border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 0.8rem; font-weight: 600; }
-    .btn-cancel-row:hover { background: #b91c1c; }
-    /* Zoom widget transition */
+    /* Reset */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { transition: font-size 0.15s ease; }
+    body {
+      font-family: var(--font-sans);
+      background: var(--background);
+      color: var(--card-foreground);
+      line-height: 1.5;
+      font-size: 16px;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
 
-    /* TASK-014: Mobile booking list — hidden on desktop */
+    /* ── Site header ─────────────────────────────────────────────── */
+    .site-header {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      padding: 18px 28px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      box-shadow: var(--shadow-md);
+    }
+    .site-header h1 {
+      font-family: var(--font-display);
+      font-size: 1.45rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .header-right { text-align: right; }
+    .header-stats {
+      font-size: 0.875rem;
+      font-weight: 500;
+      opacity: 0.92;
+    }
+    .header-sync {
+      font-size: 0.75rem;
+      opacity: 0.68;
+      margin-top: 3px;
+    }
+
+    /* ── Page container ─────────────────────────────────────────── */
+    .container { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
+
+    /* ── Legend ─────────────────────────────────────────────────── */
+    .legend {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+    }
+    .dot-confirmed { background: var(--status-confirmed); }
+
+    /* ── Month navigation ───────────────────────────────────────── */
+    .month-nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    .month-nav h2 {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--card-foreground);
+    }
+    /* shadcn Button — default variant */
+    .btn-schedule-month {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--primary);
+      color: var(--primary-foreground);
+      border: none;
+      padding: 7px 16px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      line-height: 1;
+      transition: background 0.15s;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn-schedule-month:hover:not(:disabled) { background: var(--primary-hover); }
+    .btn-schedule-month:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-schedule-month:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+    /* ── Calendar grid ──────────────────────────────────────────── */
+    .calendar-section { margin-bottom: 32px; }
+    .calendar {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      background: var(--border); /* gap colour */
+      gap: 1px;
+    }
+    .cal-header {
+      background: var(--primary);
+      color: var(--primary-foreground);
+      padding: 8px 4px;
+      text-align: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .cal-day {
+      background: var(--card);
+      min-height: 110px;
+      padding: 8px;
+      position: relative;
+      transition: background 0.1s;
+    }
+    .cal-day.empty { background: var(--muted); }
+    .cal-day.today { box-shadow: inset 0 0 0 2px var(--primary); }
+    .cal-day:not(.empty) { cursor: pointer; }
+    .cal-day:not(.empty):hover { background: var(--accent); }
+    .day-num {
+      font-weight: 600;
+      font-size: 0.82rem;
+      color: var(--muted-foreground);
+      margin-bottom: 5px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+    }
+    .cal-day.today .day-num {
+      background: var(--primary);
+      color: var(--primary-foreground);
+    }
+
+    /* ── Booking chips (shadcn Badge-inspired) ──────────────────── */
+    .booking-chip {
+      display: block;
+      padding: 3px 8px;
+      margin-bottom: 3px;
+      border-radius: 9999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: pointer;
+      transition: filter 0.12s, opacity 0.12s;
+    }
+    .booking-chip:hover { filter: brightness(0.9); }
+    .chip-confirmed  { background: var(--status-confirmed-bg);  color: var(--status-confirmed); }
+    .chip-pending    { background: var(--status-pending-bg);    color: var(--status-pending); }
+    .chip-failed     { background: var(--status-failed-bg);     color: var(--status-failed); }
+    .chip-partial    { background: var(--status-partial-bg);    color: var(--status-partial); }
+    .chip-skipped    { display: none; }
+    .chip-cancelled  { background: var(--status-cancelled-bg);  color: var(--status-cancelled); text-decoration: line-through; }
+
+    /* ── All Bookings section heading ───────────────────────────── */
+    .section-heading {
+      font-family: var(--font-display);
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--card-foreground);
+      margin: 28px 0 12px;
+    }
+
+    /* ── Detail table (shadcn Table) ────────────────────────────── */
+    .table-scroll-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .detail-table-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    .detail-table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    .detail-table thead tr { background: var(--secondary); border-bottom: 1px solid var(--border); }
+    .detail-table th {
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .detail-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.8rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--card-foreground);
+    }
+    .detail-table tbody tr:last-child td { border-bottom: none; }
+    .detail-table tr[data-id] { cursor: pointer; transition: background 0.1s; }
+    .detail-table tr[data-id]:hover { background: var(--accent); }
+
+    /* Status badges */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .badge-confirmed { background: var(--status-confirmed-bg); color: var(--status-confirmed); }
+    .badge-pending   { background: var(--status-pending-bg);   color: var(--status-pending); }
+    .badge-failed    { background: var(--status-failed-bg);    color: var(--status-failed); }
+    .badge-partial   { background: var(--status-partial-bg);   color: var(--status-partial); }
+    .badge-cancelled { background: var(--status-cancelled-bg); color: var(--status-cancelled); }
+    .badge-skipped   { background: var(--status-cancelled-bg); color: var(--status-cancelled); }
+
+    /* Cancel row button — destructive variant */
+    .btn-cancel-row {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      color: var(--status-failed);
+      border: 1px solid var(--status-failed);
+      padding: 3px 10px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      transition: background 0.12s, color 0.12s;
+    }
+    .btn-cancel-row:hover {
+      background: var(--status-failed);
+      color: white;
+    }
+
+    /* ── Modal (shadcn Dialog) ──────────────────────────────────── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      backdrop-filter: blur(2px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 16px;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal-box {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: var(--shadow-xl);
+      position: relative;
+    }
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      gap: 12px;
+    }
+    .modal-title {
+      font-family: var(--font-display);
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--card-foreground);
+      letter-spacing: -0.01em;
+      line-height: 1.3;
+    }
+    .modal-close-x {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--muted-foreground);
+      font-size: 1.1rem;
+      line-height: 1;
+      padding: 2px;
+      border-radius: var(--radius-sm);
+      transition: color 0.1s, background 0.1s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+    }
+    .modal-close-x:hover { color: var(--card-foreground); background: var(--secondary); }
+    /* Separator line under modal header */
+    .modal-separator {
+      height: 1px;
+      background: var(--border);
+      margin: 0 -28px 20px;
+    }
+    .modal-grid {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 8px 12px;
+      font-size: 0.875rem;
+      margin-bottom: 20px;
+    }
+    .modal-label { color: var(--muted-foreground); font-weight: 500; }
+    .modal-value { color: var(--card-foreground); font-weight: 600; }
+    .modal-msg {
+      font-size: 0.82rem;
+      min-height: 20px;
+      margin-bottom: 16px;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+    }
+    .modal-msg:not(:empty) { background: var(--muted); }
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      padding-top: 4px;
+    }
+    /* shadcn Button variants */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: none;
+      padding: 9px 20px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      font-family: var(--font-sans);
+      min-height: 44px;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
+    }
+    /* Secondary/outline */
+    .btn-close-modal {
+      background: var(--secondary);
+      color: var(--secondary-foreground);
+      border: 1px solid var(--border);
+    }
+    .btn-close-modal:hover { background: var(--border); }
+    /* Destructive */
+    .btn-cancel-res {
+      background: var(--status-failed);
+      color: white;
+    }
+    .btn-cancel-res:hover:not(:disabled) { background: #b91c1c; }
+    .btn-cancel-res:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+    /* ── Book-day modal form ─────────────────────────────────────── */
+    .bd-form-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+    .bd-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--card-foreground);
+    }
+    /* shadcn Input/Select look */
+    .bd-select {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-size: 0.875rem;
+      font-family: var(--font-sans);
+      background: var(--card);
+      color: var(--card-foreground);
+      width: 100%;
+      outline: none;
+      transition: border-color 0.12s, box-shadow 0.12s;
+    }
+    .bd-select:focus {
+      border-color: var(--ring);
+      box-shadow: 0 0 0 2px rgba(20,83,45,0.12);
+    }
+    .bd-date-display {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--card-foreground);
+      padding: 6px 0 10px;
+    }
+    .bd-book-btn {
+      background: var(--primary);
+      color: var(--primary-foreground);
+    }
+    .bd-book-btn:hover:not(:disabled) { background: var(--primary-hover); }
+    .bd-book-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Mobile booking list ────────────────────────────────────── */
     .mobile-booking-list { display: none; }
     .mobile-booking-card {
-      padding: 12px 16px;
+      background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      background: var(--bg-card);
-      margin-bottom: 8px;
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      box-shadow: var(--shadow-sm);
     }
     .mobile-booking-card-date {
-      font-family: 'Manrope', sans-serif;
+      font-family: var(--font-display);
       font-weight: 700;
-      font-size: 1rem;
-      color: var(--text-primary);
-      margin-bottom: 8px;
+      font-size: 0.95rem;
+      color: var(--card-foreground);
+      margin-bottom: 10px;
     }
-    /* TASK-014: 44px touch target on mobile chips */
     .mobile-booking-list .booking-chip {
       min-height: 44px;
       display: flex;
       align-items: center;
-      padding: 10px 12px;
+      padding: 10px 14px;
+      border-radius: var(--radius-sm);
     }
     .mobile-cancel-btn {
-      display: block;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       margin-top: 8px;
-      background: var(--accent-failed);
+      background: var(--status-failed);
       color: white;
       border: none;
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       padding: 10px 16px;
       font-size: 0.875rem;
       font-weight: 600;
+      font-family: var(--font-sans);
       cursor: pointer;
       min-height: 44px;
       width: 100%;
-      text-align: center;
+      transition: background 0.12s;
     }
     .mobile-cancel-btn:hover { background: #b91c1c; }
 
-    /* TASK-014/016: Media queries */
+    /* ── Zoom widget ────────────────────────────────────────────── */
+    #zoom-control {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--card-foreground);
+      color: var(--primary-foreground);
+      border-radius: 9999px;
+      padding: 8px 16px;
+      font-family: monospace;
+      font-size: 13px;
+      box-shadow: var(--shadow-xl);
+      user-select: none;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    #zoom-control button {
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 15px;
+      padding: 2px 4px;
+      border-radius: 4px;
+      transition: background 0.1s;
+    }
+    #zoom-control button:hover { background: rgba(255,255,255,0.12); }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
     @media (max-width: 639px) {
       .calendar { display: none; }
       .mobile-booking-list { display: block; }
-      /* TASK-016: Hide zoom widget on mobile */
       #zoom-control { display: none !important; }
-      /* TASK-015: 44px touch targets on mobile interactive elements */
       .month-nav button,
       .btn-schedule-month,
       .btn-cancel-row {
@@ -497,55 +927,47 @@ app.get('/', async (req, res) => {
     @media (min-width: 640px) {
       .mobile-booking-list { display: none; }
     }
-    /* Book-day modal */
-    .bd-form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
-    .bd-label { font-size: 0.85rem; font-weight: 600; color: #555; }
-    .bd-select { padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 0.9rem; background: #fff; width: 100%; }
-    .bd-date-display { font-size: 1rem; font-weight: 700; color: var(--text-primary); padding: 6px 0; }
-    .cal-day:not(.empty) { cursor: pointer; }
-    .cal-day:not(.empty):hover { background: #f0fdf4; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>Golf Scheduler - Fort Walton Beach</h1>
-    <div>
-      <div class="stats" id="header-stats">
+  <header class="site-header">
+    <h1>Golf Scheduler &mdash; Fort Walton Beach</h1>
+    <div class="header-right">
+      <div class="header-stats" id="header-stats">
         ${bookings.filter(b => b.status === 'confirmed').length} Confirmed
       </div>
-      <!-- TASK-018: Last synced timestamp -->
-      <div class="last-sync" id="last-sync-display">Last synced: ${formattedSync}</div>
+      <div class="header-sync" id="last-sync-display">Last synced: ${formattedSync}</div>
     </div>
-  </div>
+  </header>
   <div class="container">
     <div class="legend">
       <div class="legend-item"><div class="legend-dot dot-confirmed"></div> Confirmed</div>
     </div>
 
-    ${generateCalendarHTML(year, month, byDate, 'Schedule Month', isAdmin)}
-    ${generateCalendarHTML(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1, byDate, 'Book Now', isAdmin)}
+    <div class="calendar-section">${generateCalendarHTML(year, month, byDate, 'Schedule Month', isAdmin)}</div>
+    <div class="calendar-section">${generateCalendarHTML(month === 11 ? year + 1 : year, month === 11 ? 0 : month + 1, byDate, 'Book Now', isAdmin)}</div>
 
-    <h2 style="margin-top:30px; margin-bottom:10px; font-family:'Manrope',sans-serif; font-weight:700; letter-spacing:-0.02em;">All Bookings</h2>
-    <!-- TASK-017: Wrap table in scroll wrapper -->
+    <h2 class="section-heading">All Bookings</h2>
     <div class="table-scroll-wrapper">
+      <div class="detail-table-card">
       <table class="detail-table">
         <thead>
           <tr>
-            <th>Date</th>
-            <th>Day</th>
-            <th>Target Time</th>
-            <th>Actual Time</th>
-            <th>Slot</th>
-            <th>Course</th>
-            <th>Status</th>
-            <th>Confirmation</th>
-            <th>Booked By</th>
-            <th>Attempts</th>
-            <th>Action</th>
+            <th style="width:90px">Date</th>
+            <th style="width:90px">Day</th>
+            <th style="width:62px">Target</th>
+            <th style="width:62px">Actual</th>
+            <th style="width:36px">Slot</th>
+            <th style="width:36px">Plyrs</th>
+            <th style="width:52px">Course</th>
+            <th style="width:72px">Status</th>
+            <th style="width:90px">Confirm#</th>
+            <th style="width:28px">By</th>
+            <th style="width:62px">Action</th>
           </tr>
         </thead>
         <tbody>
-          ${bookings.filter(b => b.status === 'confirmed').map(b => `
+          ${bookings.filter(b => b.status === 'confirmed' && b.slot_index !== 0).map(b => `
             <tr data-id="${b.id}" data-status="${b.status}" data-date="${b.date}" data-label="${b.day_label}"
                 data-time="${b.actual_time || b.target_time}" data-course="${b.course}"
                 data-confirmation="${b.confirmation_number || ''}"
@@ -556,31 +978,36 @@ app.get('/', async (req, res) => {
               <td>${b.target_time}</td>
               <td>${b.actual_time || '-'}</td>
               <td>${b.slot_index}</td>
+              <td>${b.players || 4}</td>
               <td>${b.course}</td>
               <td><span class="status-badge badge-${b.status}">${b.status}</span></td>
               <td>${b.confirmation_number || '-'}</td>
-              <td>G${(b.golfer_index || 0) + 1}</td>
-              <td>${b.attempts}</td>
+              <td>${config.golfers[b.golfer_index || 0]?.email || `G${(b.golfer_index || 0) + 1}`}</td>
               <td>${isAdmin && ['confirmed','pending','failed'].includes(b.status) ? `<button class="btn-cancel-row" aria-label="Cancel reservation for ${b.date}" onclick="event.stopPropagation();openModal(this.closest('tr').dataset)">Cancel</button>` : ''}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
+      </div>
     </div>
   </div>
 
-  <!-- TASK-015/016: Zoom widget with aria-labels; hidden on mobile via CSS -->
-  <div id="zoom-control" style="position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;align-items:center;gap:8px;background:#1C1C1E;color:#FAFAF9;border-radius:999px;padding:8px 16px;font-family:monospace;font-size:14px;box-shadow:0 4px 24px rgba(0,0,0,0.3);user-select:none;">
-    <button onclick="zoom(-1)" aria-label="Decrease text size" style="background:none;border:none;color:inherit;cursor:pointer;font-size:16px;">A−</button>
+  <!-- Zoom widget; hidden on mobile via CSS -->
+  <div id="zoom-control">
+    <button onclick="zoom(-1)" aria-label="Decrease text size">A&minus;</button>
     <span id="zoom-label">100%</span>
-    <button onclick="zoom(1)" aria-label="Increase text size" style="background:none;border:none;color:inherit;cursor:pointer;font-size:18px;">A+</button>
+    <button onclick="zoom(1)" aria-label="Increase text size">A+</button>
   </div>
 
   <!-- Book-day modal (admin only) -->
   ${isAdmin ? `
   <div class="modal-overlay" id="book-day-overlay" onclick="if(event.target===this)closeBookDayModal()">
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="bd-title">
-      <div class="modal-title" id="bd-title">Book a Tee Time</div>
+      <div class="modal-header">
+        <div class="modal-title" id="bd-title">Book a Tee Time</div>
+        <button class="modal-close-x" onclick="closeBookDayModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-separator"></div>
       <div class="bd-date-display" id="bd-date-display"></div>
       <input type="hidden" id="bd-date-input">
       <div class="bd-form-row">
@@ -616,33 +1043,35 @@ app.get('/', async (req, res) => {
           <option value="3" selected>3 slots — 12 players</option>
         </select>
       </div>
-      <div class="modal-msg" id="bd-msg" style="margin-bottom:14px;"></div>
+      <div class="modal-msg" id="bd-msg"></div>
       <div class="modal-actions">
         <button class="btn btn-close-modal" onclick="closeBookDayModal()">Close</button>
-        <button class="btn" id="bd-book-btn" style="background:var(--accent-action);color:white;" onclick="submitBookDay()">Book</button>
+        <button class="btn bd-book-btn" id="bd-book-btn" onclick="submitBookDay()">Book</button>
       </div>
     </div>
   </div>` : ''}
 
-  <!-- TASK-019: Modal with role="dialog", aria-modal, aria-labelledby -->
+  <!-- Booking detail modal -->
   <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
     <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title-id">
-      <!-- TASK-019: id on modal title for aria-labelledby -->
-      <div class="modal-title" id="modal-title-id">Booking Details</div>
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title-id">Booking Details</div>
+        <button class="modal-close-x" onclick="closeModal()" aria-label="Close booking details">&times;</button>
+      </div>
+      <div class="modal-separator"></div>
       <div class="modal-grid">
-        <span class="modal-label">Date</span>       <span class="modal-value" id="m-date"></span>
-        <span class="modal-label">Day</span>        <span class="modal-value" id="m-label"></span>
-        <span class="modal-label">Confirmed Time</span><span class="modal-value" id="m-confirmed-time"></span>
-        <span class="modal-label">Target Time</span>  <span class="modal-value" id="m-target-time"></span>
-        <span class="modal-label">Course</span>     <span class="modal-value" id="m-course"></span>
-        <span class="modal-label">Players</span>    <span class="modal-value" id="m-players"></span>
-        <span class="modal-label">Booked by</span>  <span class="modal-value" id="m-golfer"></span>
-        <span class="modal-label">Status</span>     <span class="modal-value" id="m-status"></span>
-        <span class="modal-label">Confirmation</span><span class="modal-value" id="m-confirmation"></span>
+        <span class="modal-label">Date</span>            <span class="modal-value" id="m-date"></span>
+        <span class="modal-label">Day</span>             <span class="modal-value" id="m-label"></span>
+        <span class="modal-label">Confirmed Time</span>  <span class="modal-value" id="m-confirmed-time"></span>
+        <span class="modal-label">Target Time</span>     <span class="modal-value" id="m-target-time"></span>
+        <span class="modal-label">Course</span>          <span class="modal-value" id="m-course"></span>
+        <span class="modal-label">Players</span>         <span class="modal-value" id="m-players"></span>
+        <span class="modal-label">Booked by</span>       <span class="modal-value" id="m-golfer"></span>
+        <span class="modal-label">Status</span>          <span class="modal-value" id="m-status"></span>
+        <span class="modal-label">Confirmation</span>    <span class="modal-value" id="m-confirmation"></span>
       </div>
       <div class="modal-msg" id="m-msg"></div>
       <div class="modal-actions">
-        <!-- TASK-015: aria-label on close button -->
         <button class="btn btn-close-modal" id="btn-close-modal" aria-label="Close booking details" onclick="closeModal()">Close</button>
         ${isAdmin ? `<button class="btn btn-cancel-res" id="m-cancel-btn" onclick="cancelBooking()">Cancel Reservation</button>` : ''}
       </div>
@@ -1112,18 +1541,26 @@ async function startServer() {
 
   const useHttps = process.env.HTTPS_ENABLED === 'true' && fs.existsSync(certPath) && fs.existsSync(keyPath);
 
-  if (useHttps) {
-    const creds = { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
-    https.createServer(creds, app).listen(PORT, () => {
-      logger.info(`Web view running at https://localhost:${PORT}`);
-      console.log(`\nCalendar view: https://localhost:${PORT}\n`);
-    });
-  } else {
-    app.listen(PORT, () => {
-      logger.info(`Web view running at http://localhost:${PORT}`);
-      console.log(`\nCalendar view: http://localhost:${PORT}\n`);
-    });
-  }
+  return new Promise((resolve, reject) => {
+    let server;
+    if (useHttps) {
+      const creds = { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
+      server = https.createServer(creds, app);
+      server.on('error', reject);
+      server.listen(PORT, () => {
+        logger.info(`Web view running at https://localhost:${PORT}`);
+        console.log(`\nCalendar view: https://localhost:${PORT}\n`);
+        resolve(server);
+      });
+    } else {
+      server = app.listen(PORT, () => {
+        logger.info(`Web view running at http://localhost:${PORT}`);
+        console.log(`\nCalendar view: http://localhost:${PORT}\n`);
+        resolve(server);
+      });
+      server.on('error', reject);
+    }
+  });
 }
 
 module.exports = { startServer };
