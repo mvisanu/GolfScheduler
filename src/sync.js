@@ -89,18 +89,7 @@ async function runSync(siteInstance = null) {
   const checkedDates = new Set();
 
   try {
-    // ── Session setup ────────────────────────────────────────────────────────
-    if (ownsSession) {
-      site = new SiteAutomation();
-      await site.init();
-      // Navigate to booking page before login so the login modal appears.
-      await site.navigateToBooking(
-        config.site.courses.pines.id,
-        new Date().toISOString().slice(0, 10)
-      );
-      await site.login();
-      logger.info('[SYNC] Browser session created and logged in');
-    } else {
+    if (!ownsSession) {
       logger.info('[SYNC] Reusing provided SiteAutomation session');
     }
 
@@ -118,20 +107,52 @@ async function runSync(siteInstance = null) {
     }
 
     // ── Step 1: Scrape visible reservation list ───────────────────────────────
-    logger.info('[SYNC] Step 1: Scraping visible reservation list...');
-
+    // When ownsSession=true, scrape every configured golfer account so that
+    // reservations booked under any golfer (round-robin rotation) are captured.
+    // When a session is provided (scheduler path), scrape only that session.
     /** @type {Array<{ date: string, time: string, course: string, confirmationNumber: string }>} */
     let listReservations = [];
-    try {
-      listReservations = await site.scrapeReservationHistory();
-    } catch (err) {
-      logger.error(`[SYNC] Step 1 scrape failed: ${err.message}`);
-      totalErrors++;
-      // Continue to Step 2 even if Step 1 fails — we may still recover data
-      // via direct ID probing.
+
+    if (ownsSession) {
+      const today = new Date().toISOString().slice(0, 10);
+      logger.info(`[SYNC] Step 1: Scraping reservations for ${config.golfers.length} golfer account(s)...`);
+
+      for (let gi = 0; gi < config.golfers.length; gi++) {
+        const golfer = config.golfers[gi];
+        const gSite = new SiteAutomation({ email: golfer.email, password: golfer.password });
+        try {
+          await gSite.init();
+          await gSite.navigateToBooking(config.site.courses.pines.id, today);
+          await gSite.login();
+          logger.info(`[SYNC] Step 1: Logged in as golfer ${gi} (${golfer.email})`);
+
+          const golferRes = await gSite.scrapeReservationHistory();
+          logger.info(`[SYNC] Step 1: Golfer ${gi} — ${golferRes.length} reservation(s) found`);
+
+          for (const r of golferRes) {
+            // Deduplicate by confirmation number across accounts.
+            if (!listReservations.some(x => x.confirmationNumber === r.confirmationNumber)) {
+              listReservations.push(r);
+            }
+          }
+        } catch (err) {
+          logger.error(`[SYNC] Step 1: Golfer ${gi} (${golfer.email}) failed: ${err.message}`);
+          totalErrors++;
+        } finally {
+          try { await gSite.close(); } catch {}
+        }
+      }
+    } else {
+      // Shared session provided — scrape as that account only.
+      try {
+        listReservations = await site.scrapeReservationHistory();
+      } catch (err) {
+        logger.error(`[SYNC] Step 1 scrape failed: ${err.message}`);
+        totalErrors++;
+      }
     }
 
-    logger.info(`[SYNC] Step 1: Found ${listReservations.length} reservation(s) on list page`);
+    logger.info(`[SYNC] Step 1: Found ${listReservations.length} reservation(s) total across all accounts`);
 
     // Group Step 1 results by date.
     /** @type {Map<string, Array<{ date, time, course, confirmationNumber }>>} */
@@ -173,59 +194,135 @@ async function runSync(siteInstance = null) {
       if (knownIds.length === 0) {
         logger.info('[SYNC] Step 2: No known numeric confirmation IDs to probe around — skipping');
       } else {
-        // Build the deduplicated probe set.
-        const probeIdSet = new Set();
-        for (const id of knownIds) {
-          for (let delta = -PROBE_RADIUS; delta <= PROBE_RADIUS; delta++) {
-            const candidate = id + delta;
-            if (candidate > 0) probeIdSet.add(candidate);
-          }
-        }
-        const sortedProbeIds = [...probeIdSet].sort((a, b) => a - b);
-
-        logger.info(
-          `[SYNC] Step 2: Probing ${sortedProbeIds.length} ID(s) around ${knownIds.length} known confirmation number(s)...`
-        );
-
         // Map of date → reservations found via direct probe.
         /** @type {Map<string, Array<{ date, time, course, confirmationNumber }>>} */
         const probeByDate = new Map();
-        let probeHits = 0;
+        let totalProbeHits = 0;
 
-        for (const id of sortedProbeIds) {
-          let res = null;
-          try {
-            res = await site.fetchReservationById(id);
-          } catch (err) {
-            logger.warn(`[SYNC] Step 2: fetchReservationById(${id}) threw: ${err.message}`);
-            totalErrors++;
-            continue;
-          }
+        if (ownsSession) {
+          // When running standalone, probe per-golfer so each account can only
+          // see its own reservation detail pages.
+          const today = new Date().toISOString().slice(0, 10);
 
-          if (!res || !res.date || !res.time) continue;
-          // Only accumulate results for dates that still need probing.
-          if (!datesToProbe.has(res.date)) continue;
+          for (let gi = 0; gi < config.golfers.length; gi++) {
+            const golfer = config.golfers[gi];
 
-          if (!probeByDate.has(res.date)) probeByDate.set(res.date, []);
-          const existing = probeByDate.get(res.date);
-          // Deduplicate by confirmation number.
-          if (!existing.some(r => r.confirmationNumber === res.confirmationNumber)) {
+            // Only probe for dates that have at least one DB row assigned to this golfer.
+            const golferDatesToProbe = [...datesToProbe].filter(d => {
+              const rows = dbByDate.get(d) || [];
+              return rows.some(b => (b.golfer_index || 0) === gi);
+            });
+            if (golferDatesToProbe.length === 0) continue;
+
+            // Collect known IDs from THIS golfer's confirmed bookings.
+            const golferKnownIds = allUpcoming
+              .filter(b => (b.golfer_index || 0) === gi && b.confirmation_number && /^\d+$/.test(b.confirmation_number))
+              .map(b => parseInt(b.confirmation_number, 10));
+
+            if (golferKnownIds.length === 0) {
+              logger.info(`[SYNC] Step 2: Golfer ${gi} — no known IDs to probe around`);
+              continue;
+            }
+
+            const probeIdSet = new Set();
+            for (const id of golferKnownIds) {
+              for (let delta = -PROBE_RADIUS; delta <= PROBE_RADIUS; delta++) {
+                const candidate = id + delta;
+                if (candidate > 0) probeIdSet.add(candidate);
+              }
+            }
+            const sortedProbeIds = [...probeIdSet].sort((a, b) => a - b);
+
             logger.info(
-              `[SYNC] Step 2: Found ID ${id}: ${res.date} ${res.time} ${res.course} Res#${res.confirmationNumber}`
+              `[SYNC] Step 2: Golfer ${gi} (${golfer.email}) — probing ${sortedProbeIds.length} ID(s) for dates: ${golferDatesToProbe.sort().join(', ')}`
             );
-            existing.push(res);
-            probeHits++;
+
+            const gSite = new SiteAutomation({ email: golfer.email, password: golfer.password });
+            try {
+              await gSite.init();
+              await gSite.navigateToBooking(config.site.courses.pines.id, today);
+              await gSite.login();
+
+              let golferHits = 0;
+              for (const id of sortedProbeIds) {
+                let res = null;
+                try {
+                  res = await gSite.fetchReservationById(id);
+                } catch (err) {
+                  logger.warn(`[SYNC] Step 2: Golfer ${gi} fetchReservationById(${id}) threw: ${err.message}`);
+                  totalErrors++;
+                  continue;
+                }
+
+                if (!res || !res.date || !res.time) continue;
+                if (!datesToProbe.has(res.date)) continue;
+
+                if (!probeByDate.has(res.date)) probeByDate.set(res.date, []);
+                const existing = probeByDate.get(res.date);
+                if (!existing.some(r => r.confirmationNumber === res.confirmationNumber)) {
+                  logger.info(
+                    `[SYNC] Step 2: Golfer ${gi} found ID ${id}: ${res.date} ${res.time} ${res.course} Res#${res.confirmationNumber}`
+                  );
+                  existing.push(res);
+                  golferHits++;
+                  totalProbeHits++;
+                }
+              }
+              logger.info(`[SYNC] Step 2: Golfer ${gi} probe complete — ${golferHits} new reservation(s)`);
+            } catch (err) {
+              logger.error(`[SYNC] Step 2: Golfer ${gi} session failed: ${err.message}`);
+              totalErrors++;
+            } finally {
+              try { await gSite.close(); } catch {}
+            }
+          }
+        } else {
+          // Shared session provided — probe using that single session.
+          const probeIdSet = new Set();
+          for (const id of knownIds) {
+            for (let delta = -PROBE_RADIUS; delta <= PROBE_RADIUS; delta++) {
+              const candidate = id + delta;
+              if (candidate > 0) probeIdSet.add(candidate);
+            }
+          }
+          const sortedProbeIds = [...probeIdSet].sort((a, b) => a - b);
+
+          logger.info(
+            `[SYNC] Step 2: Probing ${sortedProbeIds.length} ID(s) around ${knownIds.length} known confirmation number(s)...`
+          );
+
+          for (const id of sortedProbeIds) {
+            let res = null;
+            try {
+              res = await site.fetchReservationById(id);
+            } catch (err) {
+              logger.warn(`[SYNC] Step 2: fetchReservationById(${id}) threw: ${err.message}`);
+              totalErrors++;
+              continue;
+            }
+
+            if (!res || !res.date || !res.time) continue;
+            if (!datesToProbe.has(res.date)) continue;
+
+            if (!probeByDate.has(res.date)) probeByDate.set(res.date, []);
+            const existing = probeByDate.get(res.date);
+            if (!existing.some(r => r.confirmationNumber === res.confirmationNumber)) {
+              logger.info(
+                `[SYNC] Step 2: Found ID ${id}: ${res.date} ${res.time} ${res.course} Res#${res.confirmationNumber}`
+              );
+              existing.push(res);
+              totalProbeHits++;
+            }
           }
         }
 
-        logger.info(`[SYNC] Step 2: Probe complete — ${probeHits} new reservation(s) found`);
+        logger.info(`[SYNC] Step 2: Probe complete — ${totalProbeHits} new reservation(s) found`);
 
         // Merge probe results into the combined siteByDate map.
         for (const [date, slots] of probeByDate.entries()) {
           if (!siteByDate.has(date)) {
             siteByDate.set(date, slots);
           } else {
-            // Merge without duplicates (shouldn't happen, but be safe).
             const current = siteByDate.get(date);
             for (const s of slots) {
               if (!current.some(r => r.confirmationNumber === s.confirmationNumber)) {
@@ -306,13 +403,11 @@ async function runSync(siteInstance = null) {
     }
 
   } finally {
-    if (ownsSession && site) {
-      try {
-        await site.close();
-        logger.info('[SYNC] Browser session closed');
-      } catch (closeErr) {
-        logger.error(`[SYNC] Error closing browser session: ${closeErr.message}`);
-      }
+    // When ownsSession=true, each per-golfer session is opened and closed
+    // inside the Step 1 / Step 2 loops above — nothing to close here.
+    // When a shared session was provided, the caller owns its lifecycle.
+    if (!ownsSession && site) {
+      // (caller closes the shared session — no action needed)
     }
   }
 

@@ -875,8 +875,8 @@ class SiteAutomation {
           };
         }
 
-        // Try golfer counts in preferred order: 4, 2, 3, 1
-        const preferenceOrder = [4, 3, 2, 1];
+        // Try 4 players only — never book fewer than 4
+        const preferenceOrder = [4];
         for (const count of preferenceOrder) {
           if (golferBtns[count] && !golferBtns[count].disabled) {
             golferBtns[count].el.click();
@@ -896,7 +896,7 @@ class SiteAutomation {
       }, 4);
 
       // If no golfer count could be selected, skip this tee time.
-      if (golferResult.error || golferResult.selectedCount < 1) {
+      if (golferResult.error || golferResult.selectedCount !== 4) {
         const avail = golferResult.availableCounts || [];
         logger.warn(
           `Slot ${slotIndex}: ${golferResult.error || 'no spots available'} ` +
@@ -964,7 +964,7 @@ class SiteAutomation {
 
       logger.info(`Slot ${slotIndex} added to cart successfully`);
       const screenshotPath = await this.screenshot(`slot-${slotIndex}-in-cart`);
-      return { success: true, confirmationNumber: 'ADDED_TO_CART', error: null, screenshotPath };
+      return { success: true, confirmationNumber: 'ADDED_TO_CART', error: null, screenshotPath, selectedCount: golferResult.selectedCount };
 
     } catch (error) {
       const screenshotPath = await this.screenshot(`slot-${slotIndex}-error`);
@@ -1053,9 +1053,9 @@ class SiteAutomation {
       return count;
     }
 
-    // Try requested count, then fall back to lower counts
+    // Try requested count, then fall back to lower counts (minimum 2 — never book 1-player slots)
     const tryOrder = [];
-    for (let n = count; n >= 1; n--) tryOrder.push(n);
+    for (let n = count; n >= 2; n--) tryOrder.push(n);
 
     for (const n of tryOrder) {
       const entry = modalButtons.get(n);

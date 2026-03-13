@@ -36,7 +36,7 @@ program
       const server = await startServer();
       // Open browser to the calendar
       const { exec } = require('child_process');
-      const url = 'http://localhost:3000';
+      const url = 'http://localhost:3009';
       const openCmd = process.platform === 'win32' ? `start ${url}` :
                       process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
       exec(openCmd);

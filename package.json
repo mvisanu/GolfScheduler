@@ -24,5 +24,8 @@
     "playwright": "^1.49.1",
     "sql.js": "^1.11.0",
     "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "shadcn": "^4.0.2"
   }
 }

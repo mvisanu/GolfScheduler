@@ -323,16 +323,43 @@ class BookingEngine {
   _shiftTime(timeStr, minutes) {
     const [h, m] = timeStr.split(':').map(Number);
     const total = h * 60 + m + minutes;
-    return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    const totalMod = ((total % 1440) + 1440) % 1440;
+    return `${String(Math.floor(totalMod / 60)).padStart(2, '0')}:${String(totalMod % 60).padStart(2, '0')}`;
+  }
+
+  _minutesToTime(minutes) {
+    const totalMod = ((minutes % 1440) + 1440) % 1440;
+    return `${String(Math.floor(totalMod / 60)).padStart(2, '0')}:${String(totalMod % 60).padStart(2, '0')}`;
   }
 
   async _bookSlots(consecutive, slots, date, dayLabel, courseName) {
     const result = { booked: 0, failed: 0, partial: 0, _bookedSlotIds: new Set() };
     const slotsNeeded = slots.length;
     const courseId = courseName === 'Oaks' ? config.site.courses.oaks.id : config.site.courses.pines.id;
+    // Track players actually booked vs target (4 per slot) so we can add compensating slots
+    let totalPlayersBooked = 0;
+    const targetPlayersTotal = slotsNeeded * 4;
 
     // Store the times we want to book (element refs go stale after navigation)
     const timesToBook = consecutive.map(t => t.time);
+
+    // TASK-019: Multi-batch split enforcement.
+    // The site allows at most 3 tee time slots per booking transaction.
+    // The current implementation completes a full checkout per slot (batch size = 1),
+    // which always satisfies the ≤3 constraint.  If a caller somehow passes > 3 slots
+    // we log the batch breakdown so the intent is clear in the run log.
+    const MAX_BATCH_SIZE = 3;
+    if (timesToBook.length > MAX_BATCH_SIZE) {
+      const numBatches = Math.ceil(timesToBook.length / MAX_BATCH_SIZE);
+      const batchSizes = Array.from({ length: numBatches }, (_, i) =>
+        Math.min(MAX_BATCH_SIZE, timesToBook.length - i * MAX_BATCH_SIZE)
+      );
+      logger.info(
+        `Batch split triggered: ${timesToBook.length} slots → ${numBatches} batch(es) ` +
+        `of [${batchSizes.join(', ')}] slot(s) each (max ${MAX_BATCH_SIZE} per transaction)`
+      );
+    }
+
     logger.info(`Will book ${timesToBook.length} slots individually: ${timesToBook.join(', ')}`);
 
     let bookedCount = 0;
@@ -345,7 +372,7 @@ class BookingEngine {
       // Re-scan tee times to get fresh element references
       if (i > 0) {
         await this.site.navigateToBooking(courseId, date);
-        await this.site.selectCourse();
+        await this.site.selectCourse(courseName);
         await this.site.selectDate(date);
       }
 
@@ -375,23 +402,96 @@ class BookingEngine {
         const confirmation = checkoutResult.confirmationNumber || 'CONFIRMED';
         logger.info(`Slot ${i} (${targetTime}) checkout succeeded! Confirmation: ${confirmation}`);
 
-        // Trust the confirmation page — if we got a real reservation number, mark as confirmed.
-        // The Reservations page may not immediately show the booking (caching/delay).
-        await db.markSuccess(dbSlot.id, {
-          actualTime: targetTime,
-          course: courseName,
-          confirmationNumber: confirmation,
-          screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
-        });
-        bookedCount++;
-        result.booked++;
-        result._bookedSlotIds.add(dbSlot.id);
+        // TASK-020: Post-checkout verification via Reservations page.
+        // Only run verification when we have a real numeric confirmation number.
+        // If the page loads but does not contain the booking, mark as failed.
+        // If the page is unreachable / returns no reservations at all (possible
+        // caching delay after checkout), skip verification and keep confirmed.
+        let verificationFailed = false;
+        if (/^\d+$/.test(confirmation)) {
+          try {
+            const vResult = await this.site.verifyBookingOnSite(date, targetTime);
+            if (!vResult.verified) {
+              if (vResult.reservations && vResult.reservations.length > 0) {
+                // Reservations page loaded but our booking was NOT among them — real failure.
+                logger.warn(
+                  `Slot ${i} (${targetTime}) VERIFICATION FAILED: booking Res#${confirmation} ` +
+                  `not found on Reservations page for ${date} — marking failed`
+                );
+                await db.markFailed(dbSlot.id, `Post-checkout verification failed: Res#${confirmation} not found on Reservations page`);
+                result.failed++;
+                verificationFailed = true;
+              } else {
+                // Page returned no reservations — likely a caching delay; skip and keep confirmed.
+                logger.warn(
+                  `Slot ${i} (${targetTime}) verification skipped: Reservations page returned no entries ` +
+                  `(possible caching delay) — keeping confirmed`
+                );
+              }
+            } else {
+              logger.info(`Slot ${i} (${targetTime}) verification passed`);
+            }
+          } catch (verifyErr) {
+            // Unreachable / timeout — skip verification; keep confirmed.
+            logger.warn(
+              `Slot ${i} (${targetTime}) verification error (${verifyErr.message}) — skipping, keeping confirmed`
+            );
+          }
+        }
+
+        if (!verificationFailed) {
+          const playersBooked = bookResult.selectedCount || 4;
+          await db.markSuccess(dbSlot.id, {
+            actualTime: targetTime,
+            course: courseName,
+            confirmationNumber: confirmation,
+            screenshotPath: checkoutResult.screenshotPath || bookResult.screenshotPath,
+          });
+          bookedCount++;
+          totalPlayersBooked += playersBooked;
+          result.booked++;
+          result._bookedSlotIds.add(dbSlot.id);
+        }
       } else {
         await db.markFailed(dbSlot.id, bookResult.error);
         result.failed++;
       }
 
       await new Promise(r => setTimeout(r, 2000));
+    }
+
+    // If fewer-than-4-player slots were booked, add compensating pending slots
+    // so the next booking run can fill the remaining players up to the target.
+    if (totalPlayersBooked > 0 && totalPlayersBooked < targetPlayersTotal) {
+      const deficit = targetPlayersTotal - totalPlayersBooked;
+      const extraSlots = Math.ceil(deficit / 4); // additional 4-player-target slots needed
+      logger.info(
+        `Player deficit on ${date}: booked ${totalPlayersBooked}/${targetPlayersTotal} players — ` +
+        `adding ${extraSlots} extra pending slot(s)`
+      );
+      // Use the last booked slot as reference for day_label, window, golfer_index
+      const refSlot = slots[slots.length - 1];
+      const maxSlotIndex = Math.max(...slots.map(s => s.slot_index));
+      const extraBookings = [];
+      for (let e = 0; e < extraSlots; e++) {
+        // Space extra slots 10 min after the last target_time
+        const lastTime = slots[slots.length - 1].target_time;
+        const lastMins = this._timeToMinutes(lastTime) + (e + 1) * 10;
+        const extraTime = this._minutesToTime(lastMins);
+        extraBookings.push({
+          date,
+          dayLabel: refSlot.day_label,
+          targetTime: extraTime,
+          windowStart: refSlot.window_start,
+          windowEnd: refSlot.window_end,
+          course: courseName,
+          slotIndex: maxSlotIndex + 1 + e,
+          players: 4,
+          golferIndex: refSlot.golfer_index,
+        });
+      }
+      await db.ensureBookings(extraBookings);
+      result._extraSlotsAdded = extraSlots;
     }
 
     return result;
