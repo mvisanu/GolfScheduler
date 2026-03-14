@@ -1,0 +1,63 @@
+You are a senior browser automation engineer working in Claude Code.
+
+First, create a short execution plan before doing anything.
+Then execute the plan.
+
+Goal:
+Find and cancel every golf tee time reservation that was mistakenly booked for only 1 person.
+
+Background:
+There is a bug in the scheduling flow that booked tee times for only 1 player.
+We need to clean those up by cancelling all reservations where the booked player count is 1.
+
+Site behavior:
+On the reservation cancellation page:
+- Set "Number of Players to Cancel" = 1
+- Set "Reason for Cancellation" = "Want a different date"
+- Click "SUBMIT CANCELLATION"
+
+What to do:
+1. Inspect the existing project/codebase first and understand how the browser automation is structured.
+2. Reuse the existing login/session flow if already implemented.
+3. Navigate to the member tee times / reservations area.
+4. Find all active reservations that are booked for exactly 1 person.
+5. For each 1-person reservation:
+   - Open the cancellation flow
+   - Select number of players to cancel = 1
+   - Select cancellation reason = "Want a different date"
+   - Submit cancellation
+6. Continue until all mistaken 1-person tee times are cancelled.
+7. Skip reservations that are not 1-person bookings.
+8. Add clear logging for:
+   - reservation found
+   - date/time/course
+   - detected player count
+   - cancellation attempted
+   - cancellation success/failure
+9. Add retry handling for slow page loads, stale elements, popups, and intermittent failures.
+10. At the end, print a summary:
+   - total reservations scanned
+   - total 1-person reservations found
+   - total successfully cancelled
+   - total failed
+   - details of failures
+
+Important constraints:
+- Do not cancel any reservation unless the booking is clearly for exactly 1 person.
+- If the player count cannot be confidently determined, do not cancel it. Log it for manual review.
+- Prefer stable selectors, labels, button text, and accessible roles over brittle CSS/XPath.
+- Add waits so the automation is reliable.
+- Keep the implementation production-safe and easy to rerun.
+
+Implementation requirements:
+- If the project already has Playwright or another browser automation framework, use that.
+- If not, choose the most suitable existing stack already in the repo.
+- Follow the project’s existing style and patterns.
+- Refactor duplicated logic into helper functions if needed.
+- Make the script idempotent where possible.
+
+Expected output:
+- Show the plan first
+- Then create/update the automation code
+- Then explain how to run it
+- Then show any assumptions or manual inputs still required

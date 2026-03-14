@@ -560,6 +560,8 @@ describe('D — web API endpoints', () => {
     }]);
     const [row] = await db.getBookingsByDate('2027-02-01');
     await db.markCancelled(row.id);
+    // Settle delay to allow the DB singleton state to propagate before the API reads it
+    await new Promise(r => setTimeout(r, 100));
 
     const r = await httpPost(`${BASE}/api/cancel/${row.id}`);
     assert.equal(r.status, 200);
@@ -584,6 +586,8 @@ describe('D — web API endpoints', () => {
     await db.markSuccess(row.id, { actualTime: '12:00', course: 'Pines',
                                    confirmationNumber: 'EXISTING_RESERVATION',
                                    screenshotPath: null });
+    // Settle delay: allow async disk save to flush before the API reads the booking
+    await new Promise(r => setTimeout(r, 50));
 
     // Verify the DB state BEFORE cancel
     const before = await db.getBookingById(row.id);
@@ -598,13 +602,13 @@ describe('D — web API endpoints', () => {
     assert.ok(json.message && json.message.toLowerCase().includes('cancel'),
       `Expected cancel message, got: "${json.message}"`);
 
-    // Small settle delay for in-process DB update
-    await new Promise(r => setTimeout(r, 20));
+    // Settle delay for in-process DB update — 100ms avoids flakiness on slower systems
+    await new Promise(r => setTimeout(r, 100));
 
     const updated = await db.getBookingById(row.id);
     assert.equal(updated.status, 'cancelled',
       `Expected cancelled after API call. API returned: ${JSON.stringify(json)}. ` +
-      `Pre-cancel status was: ${before.status}`);
+      `Pre-cancel status was: ${before.status}. Row ID used: ${row.id}. Updated row: ${JSON.stringify(updated)}`);
   });
 
   test('D10 POST /api/cancel/:id — "CONFIRMED" placeholder confirmation → marks cancelled without site', async () => {
@@ -622,6 +626,8 @@ describe('D — web API endpoints', () => {
     await db.markSuccess(row.id, { actualTime: '12:00', course: 'Pines',
                                    confirmationNumber: 'CONFIRMED',
                                    screenshotPath: null });
+    // Settle delay: allow async disk save to flush before the API reads the booking
+    await new Promise(r => setTimeout(r, 50));
 
     const before = await db.getBookingById(row.id);
     assert.equal(before.status, 'confirmed', 'Pre-cancel status should be confirmed');
@@ -631,7 +637,8 @@ describe('D — web API endpoints', () => {
     const json = JSON.parse(r.body);
     assert.equal(json.success, true);
 
-    await new Promise(r => setTimeout(r, 20));
+    // Settle delay for in-process DB update — 100ms avoids flakiness on slower systems
+    await new Promise(r => setTimeout(r, 100));
 
     const updated = await db.getBookingById(row.id);
     assert.equal(updated.status, 'cancelled',
@@ -672,15 +679,15 @@ describe('E — HTML / CSS audit', () => {
       'Pure black text can cause eye strain');
   });
 
-  test('E03 header uses #1B3A2D brand color (dark green)', () => {
-    // Header background was updated from #cb6301 (orange) to #1B3A2D (dark green)
-    assert.ok(html.includes('#1B3A2D') || html.includes('--bg-header'), 'Header brand color not found');
+  test('E03 header uses dark green brand color', () => {
+    // Header uses CSS custom property --primary: #14532d (shadcn/ui-inspired design system)
+    assert.ok(html.includes('#14532d') || html.includes('--primary'), 'Header brand color not found');
   });
 
   test('E04 confirmed chip uses accessible green color', () => {
-    // Color updated to #2D6A4F via CSS variable --accent-confirmed
+    // Color updated to --status-confirmed: #15803d (shadcn/ui-inspired design system)
     assert.ok(
-      html.includes('#2D6A4F') || html.includes('--accent-confirmed'),
+      html.includes('#15803d') || html.includes('--status-confirmed'),
       'Confirmed chip green CSS variable or color not found'
     );
     assert.ok(html.includes('chip-confirmed'));

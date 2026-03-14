@@ -179,8 +179,8 @@ class BookingEngine {
       for (const offset of offsets) {
         const start = offset === 0 ? baseStart : this._shiftTime(baseStart, offset);
         const end   = offset === 0 ? baseEnd   : this._shiftTime(baseEnd, offset);
-        // Don't add windows with negative times (before midnight)
-        if (this._timeToMinutes(start) < 0 || this._timeToMinutes(end) < 0) continue;
+        // Note: _shiftTime uses ((total % 1440) + 1440) % 1440 which always produces [0,1439].
+        // The previous negative-time guard was unreachable and has been removed.
         attempts.push({ course, start, end, offset });
       }
     }

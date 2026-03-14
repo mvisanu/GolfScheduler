@@ -74,7 +74,16 @@ function geoLookup(ip, entry) {
 }
 
 function isLocalIP(ip) {
-  return ip === '::1' || ip === '127.0.0.1' || ip?.startsWith('192.168.') || ip?.startsWith('10.') || ip?.startsWith('172.');
+  if (!ip) return false;
+  if (ip === '::1' || ip === '127.0.0.1') return true;
+  if (ip.startsWith('192.168.') || ip.startsWith('10.')) return true;
+  // RFC 1918: 172.16.0.0/12 covers 172.16.x.x through 172.31.x.x only
+  const m = ip.match(/^172\.(\d+)\./);
+  if (m) {
+    const second = parseInt(m[1], 10);
+    return second >= 16 && second <= 31;
+  }
+  return false;
 }
 
 // Log all incoming external requests with full detail
@@ -347,14 +356,13 @@ app.get('/admin', (req, res) => {
 
 app.get('/', async (req, res) => {
   const ip = req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket.remoteAddress;
-  const isAdmin = ip === '::1' || ip === '127.0.0.1' || ip?.startsWith('192.168.') || ip?.startsWith('10.') || ip?.startsWith('172.');
+  const isAdmin = isLocalIP(ip);
 
   const bookings = await db.getAllUpcoming();
 
-  // Group bookings by date
+  // Group bookings by date — all slot_index values included (slot 0 is a valid tee time)
   const byDate = {};
   for (const b of bookings) {
-    if (b.slot_index === 0) continue;
     if (!byDate[b.date]) byDate[b.date] = [];
     byDate[b.date].push(b);
   }
@@ -968,7 +976,7 @@ app.get('/', async (req, res) => {
           </tr>
         </thead>
         <tbody>
-          ${bookings.filter(b => b.status === 'confirmed' && b.slot_index !== 0).map(b => `
+          ${bookings.filter(b => b.status === 'confirmed').map(b => `
             <tr data-id="${b.id}" data-status="${b.status}" data-date="${b.date}" data-label="${b.day_label}"
                 data-time="${b.actual_time || b.target_time}" data-course="${b.course}"
                 data-confirmation="${b.confirmation_number || ''}"

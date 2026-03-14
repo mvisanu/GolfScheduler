@@ -1,720 +1,677 @@
-# TASKS.md
+# GolfScheduler — Implementation Task List
 
-> Generated from: PRD.md
-> Generated on: 2026-03-03
-> Total tasks: 22
-
----
-
-## Assumptions & Clarifications
-
-**A1 — Time display root cause.** The `actual_time` column is populated correctly by `db.markSuccess()` for freshly-booked slots, but many existing slots carry placeholder confirmation numbers (`EXISTING_RESERVATION`, `CONFIRMED`, `access`) and a matching placeholder `actual_time` or no `actual_time` at all. `web.js` already uses `b.actual_time || b.target_time` in the chip template (line 399), so the display expression itself is correct. The M1 fix is therefore a data-accuracy problem solved by the sync engine (M2), not a template change. A targeted display-layer fix (TASK-001) is still warranted to ensure the modal label accurately distinguishes "Confirmed Time" from "Target Time".
-
-**A2 — `lastSyncAt` storage.** Stored in `./data/sync-meta.json` (plain JSON, no schema change required). This is the simpler option and avoids adding a config table to the SQLite schema.
-
-**A3 — Headless mode.** Controlled by a new `HEADLESS` environment variable. `HEADLESS=true` is set for the `scheduler` daemon command; the interactive `book` and `sync` commands default to `false` (visible browser) matching current behaviour. This is documented in the `.env.example`.
-
-**A4 — Cron implementation.** Pure `setTimeout` loop calculating the next 06:00 firing time using `dayjs`; no new npm package required (dayjs is already a dependency).
-
-**A5 — `npm run sync` wires to `src/sync.js`.** The existing `sync-reservations.js` root-level script and its `npm run sync` entry in `package.json` are superseded by the new `src/sync.js` module. The root script is deleted after TASK-007 is complete.
-
-**A6 — Unmatched site reservations.** Log-and-ignore as specified in PRD Section 4.3 Non-Goals. The sync will log them at INFO level with a `[SYNC] Unmatched site reservation` prefix but will not create new DB records.
-
-**A7 — Session sharing between sync and booking.** `sync.js` accepts an optional `SiteAutomation` instance argument so the daily job can reuse the already-authenticated browser session. When called standalone (`npm run sync`), it creates its own session.
-
-**A8 — Mobile breakpoint for list view.** `< 640px` collapses calendar to a vertical booking-card list showing only days with bookings, exactly as specified in PRD Section 12.
-
-**A9 — Auto-refresh.** Implemented as a client-side `setInterval` polling `GET /api/bookings` every 60 seconds and re-rendering the chip area without a full page reload (FR-038, P2).
+**Generated:** 2026-03-09
+**Source documents:** `booking.md`, `prd.md`, `CLAUDE.md`
+**Codebase state:** Substantially implemented. Tasks reflect what needs to be built,
+verified, fixed, or gap-closed relative to the full PRD.
 
 ---
 
-## Parallel Work Waves
+## Phase 1: Foundation — Config, DB, and Core Utilities
 
-**Wave 1 (no blockers):** TASK-001, TASK-002, TASK-003, TASK-004
+### TASK-001: Establish project structure and package dependencies
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** none
+- **Acceptance criteria:**
+  - `package.json` declares all eight required dependencies: `playwright`, `sql.js`, `express`, `commander`, `dayjs`, `dotenv`, `winston`, `acme-client`
+  - All npm scripts defined: `book`, `dry-run`, `status`, `init`, `scheduler`, `web`, `cancel`, `sync`, `generate`
+  - `npx playwright install chromium` documented in README and setup instructions
+  - `.env.example` file present with all fourteen env var keys and inline comments
 
-**Wave 2 (needs Wave 1 foundations):** TASK-005, TASK-006, TASK-007, TASK-008
+### TASK-002: Implement `src/logger.js` — Winston structured logger
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-001
+- **Acceptance criteria:**
+  - Exports a configured Winston logger instance
+  - Log level controlled by `LOG_LEVEL` env var (default `info`)
+  - Console transport active; file transport writes to `./golf-scheduler.log`
+  - File rotation: 5 MB max size, 3 files kept
+  - Logger usable via `require('./logger')` from any src module
 
-**Wave 3:** TASK-009, TASK-010, TASK-011, TASK-012
+### TASK-003: Implement `src/config.js` — centralised configuration
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-001
+- **Acceptance criteria:**
+  - Loads `.env` via `dotenv`
+  - Reads `schedule.json` from project root; exits with a clear error if missing or if any entry has an invalid `day` value
+  - Exports: `email`, `password`, `golfers` array (filtered to complete credential pairs only), `timezone`, `horizonDays`, `maxRetries`, `screenshotDir`, `dbPath`, `schedulerHour` (validated 0–23, defaults to 6), `site` object with `memberUrl`, `courses.pines.id`, `courses.oaks.id`
+  - Exports `resolveAlternatingCourse(dateStr)` — even ISO week → `'Pines'`, odd ISO week → `'Oaks'`
+  - `schedule` array maps raw JSON entries to internal shape: `{ day (0–6), windowStart, windowEnd, players, slots, preferredCourse, label }`
+  - Process exits with readable error message if `GOLF_EMAIL` or `GOLF_PASSWORD` are missing
 
-**Wave 4:** TASK-013, TASK-014, TASK-015
+### TASK-004: Implement `src/db.js` — SQLite persistence layer (sql.js)
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-002, TASK-003
+- **Acceptance criteria:**
+  - Uses `sql.js` (pure-JS, no native build)
+  - Auto-creates `./data/` directory if absent
+  - `bookings` table schema matches PRD Section 7: all 19 columns including `golfer_index INTEGER NOT NULL DEFAULT 0`, `window_start`, `window_end`
+  - `UNIQUE(date, target_time, slot_index)` constraint present
+  - Indexes on `date` and `status`
+  - `ALTER TABLE … ADD COLUMN` migrations wrapped in try/catch for backward compatibility with existing databases
+  - Exports async methods: `getDb`, `ensureBookings`, `getPendingBookings`, `getBookingsByDate`, `getAllUpcoming`, `markSuccess`, `markFailed`, `markPartial`, `markSkipped`, `markCancelled`, `getBookingById`, `getConfirmedByDate`, `updateBookingSync`
+  - `getAllUpcoming()` detects file `mtime` change and re-reads from disk without replacing the in-flight in-memory instance mid-write
+  - `getLastSyncAt()` / `setLastSyncAt()` read/write `./data/sync-meta.json` synchronously
+  - `save()` persists binary export to `config.dbPath` after every mutation
+  - `getPendingBookings()` filters `status IN ('pending','failed')` and `attempts < maxRetries`
 
-**Wave 5:** TASK-016, TASK-017, TASK-018
+### TASK-005: Implement `schedule.json` — recurring booking schedule definition
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** none
+- **Acceptance criteria:**
+  - Five entries: Monday, Tuesday, Friday, Saturday, Sunday
+  - Fields per entry: `day`, `windowStart`, `windowEnd`, `players`, `slots`, `course`
+  - Sunday `course` value is `"alternating"`
+  - Player counts and slot counts match PRD Section 4 (Mon 12/3, Tue 8/2, Fri 12/3, Sat 12/3, Sun 12/3)
 
-**Wave 6:** TASK-019, TASK-020
-
-**Wave 7:** TASK-021, TASK-022
-
----
-
-## Tasks
-
----
-
-### TASK-001 · Fix booking detail modal to label time correctly (Confirmed vs Target)
-
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P0 |
-| **Blocked by** | none |
-
-**Context.**
-`web.js` line 399 already renders `b.actual_time || b.target_time` on calendar chips. The modal (`openModal`) currently shows a single "Time" label regardless of whether the value is `actual_time` or `target_time`. The fix adds a secondary "Target Time" row to the modal grid and changes the primary "Time" label to "Confirmed Time" when `actual_time` is present.
-
-**Changes required.**
-- In `generateCalendarHTML`, add `data-target-time` and `data-actual-time` attributes to each chip element.
-- In the table row HTML, add `data-target-time` and `data-actual-time` attributes.
-- In the modal HTML, split the single "Time" row into two rows: "Confirmed Time" (shows `actual_time` or "—") and "Target Time" (shows `target_time`).
-- Update `openModal(data)` JS function to populate both new modal fields.
-
-**Acceptance Criteria:**
-- [ ] When a confirmed booking with `actual_time` set is clicked, the modal shows "Confirmed Time: HH:MM" and "Target Time: HH:MM" as separate rows.
-- [ ] When a pending/failed booking with null `actual_time` is clicked, the modal shows "Confirmed Time: —" and "Target Time: HH:MM".
-- [ ] The calendar chip still displays `actual_time` when present, `target_time` otherwise — no regression.
-- [ ] The "All Bookings" table already has separate Target Time and Actual Time columns — verify no change is needed and both columns render correctly.
-- [ ] All time values display in 24-hour HH:MM format (no 12-hour format introduced).
-
----
-
-### TASK-002 · Add `updateBookingSync` method to `db.js`
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | S |
-| **Priority** | P0 |
-| **Blocked by** | none |
-
-**Context.**
-The sync engine needs a DB write path that sets `actual_time`, `confirmation_number`, and `course` without touching `status` (unlike `markSuccess` which always sets `status = 'confirmed'`). It also needs to preserve `status = 'cancelled'` records that match a site reservation — the sync should correct the data and restore them to `confirmed`.
-
-**Changes required.**
-- Add `async updateBookingSync(id, { actualTime, course, confirmationNumber, restoreConfirmed })` to `db.js`.
-- When `restoreConfirmed = true`, set `status = 'confirmed'`; otherwise preserve the existing status.
-- Always update `actual_time`, `course` (if provided and not `'Unknown'`), `confirmation_number`, and `updated_at`.
-- Call `save()` after the update.
-
-**Acceptance Criteria:**
-- [ ] Calling `updateBookingSync(id, { actualTime: '08:10', confirmationNumber: '418947571', restoreConfirmed: true })` sets `status = 'confirmed'`, `actual_time = '08:10'`, `confirmation_number = '418947571'`.
-- [ ] Calling `updateBookingSync(id, { actualTime: '08:10', confirmationNumber: '418947571', restoreConfirmed: false })` updates the time and confirmation number but leaves `status` unchanged.
-- [ ] `updated_at` is set to the current datetime after every call.
-- [ ] `save()` is called and the DB file is persisted after the update.
-- [ ] Passing `course = 'Unknown'` does not overwrite the existing course value.
-
----
-
-### TASK-003 · Create `./data/sync-meta.json` schema and read/write helpers in `db.js`
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | XS |
-| **Priority** | P1 |
-| **Blocked by** | none |
-
-**Context.**
-`lastSyncAt` needs to persist across process restarts. A small JSON file at `./data/sync-meta.json` is simpler than a new DB table. Two helper functions belong in `db.js` so both `sync.js` and `web.js` can access them consistently.
-
-**Changes required.**
-- Add `getLastSyncAt()` — reads `./data/sync-meta.json`, returns the `lastSyncAt` ISO string or `null` if file doesn't exist.
-- Add `setLastSyncAt(isoString)` — writes `{ lastSyncAt: isoString }` to `./data/sync-meta.json`, creating the file if absent.
-- The `./data/` directory is guaranteed to exist by the time `db.js` runs (it is created in `getDb()`), so no extra directory creation is needed.
-
-**Acceptance Criteria:**
-- [ ] `setLastSyncAt('2026-03-03T06:02:00.000Z')` creates `./data/sync-meta.json` with `{ "lastSyncAt": "2026-03-03T06:02:00.000Z" }`.
-- [ ] `getLastSyncAt()` returns the previously written ISO string.
-- [ ] `getLastSyncAt()` returns `null` when the file does not exist (no thrown error).
-- [ ] Overwriting an existing file with a new `setLastSyncAt` call replaces the full file contents.
+### TASK-006: Implement `src/scheduler.js` — slot computation
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-003, TASK-005
+- **Acceptance criteria:**
+  - `computeBookingSlots()` iterates `config.horizonDays` days from today using `dayjs` in `config.timezone`
+  - Assigns `golferIndex` round-robin per unique booking date — all slots on the same date share one golfer index
+  - Each slot target time spaced 10 min apart from `windowStart`
+  - `"alternating"` sentinel resolved via `resolveAlternatingCourse(dateStr)` before inserting
+  - Always sets `players: 4` per slot
+  - Returns flat array of slot objects with: `{ date, dayLabel, targetTime, windowStart, windowEnd, course, slotIndex, players, golferIndex }`
+  - `groupByDateAndTime(bookings)` groups DB rows by `date|day_label` key, sorts each group's slots by `slot_index`
 
 ---
 
-### TASK-004 · Add `HEADLESS` env var support to `site.js`
+## Phase 2: Browser Automation — SiteAutomation Class
 
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | XS |
-| **Priority** | P1 |
-| **Blocked by** | none |
+### TASK-007: Implement `SiteAutomation` skeleton — browser lifecycle
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-002, TASK-003
+- **Acceptance criteria:**
+  - Constructor accepts `{ email, password }`, defaults to `config.email` / `config.password`
+  - `init()` launches Chromium via Playwright; `headless` controlled by `HEADLESS` env var; viewport 1280×900; timezone set from `config.timezone`
+  - Default page timeout set to 30 000 ms
+  - `close()` closes browser and nulls internal refs
+  - `screenshot(name)` saves to `config.screenshotDir` with timestamp suffix, returns path
+  - All page navigations use `{ waitUntil: 'domcontentloaded' }`
 
-**Context.**
-The daily 06:00 automated job should run headless (no visible browser window) to avoid popping a Chromium window while the machine is in use. Interactive commands (`book`, `sync`, `cancel`) should default to visible for debugging. The toggle must be env-var-driven so no code change is needed to switch modes.
+### TASK-008: Implement `login()` and session helpers
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-007
+- **Acceptance criteria:**
+  - `navigateToBooking(courseId, date)` navigates to `{memberUrl}/teetimes?course={courseId}&date={date}`
+  - `login()` clicks Login button → finds GolfID iframe or embedded form → fills email/password → submits
+  - Dismisses email-verification interstitial via `[aria-label="Close"]` and body-click fallback
+  - `_checkForBlocks()` throws `BLOCKED: …` if CAPTCHA or Access Denied indicators found on page
+  - `_verifyLoggedIn()` checks for post-login DOM indicators; logs warning (does not throw) if uncertain
+  - All element clicks use `el.evaluate(el => el.click())`, never Playwright `.click()`
+  - `_dismissModals()` clicks `.MuiBackdrop-root` and presses Escape
 
-**Changes required.**
-- In `site.js`, read `process.env.HEADLESS` when constructing the Playwright browser launch options.
-- Default to `headless: false` when `HEADLESS` is unset or any value other than `'true'`.
-- Set `headless: true` when `HEADLESS === 'true'`.
-- Document the variable in `.env.example` (add a commented line `# HEADLESS=true`).
+### TASK-009: Implement `clearCart()`
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-008
+- **Acceptance criteria:**
+  - `clearCart()` opens cart panel and removes all items
+  - Called after every successful `login()` to prevent "cart limit" errors
+  - Handles empty cart gracefully — no error thrown
+  - `_clickCartIcon()` tries: aria-label selectors → MuiBadge in header → rightmost header element
 
-**Acceptance Criteria:**
-- [ ] When `HEADLESS=true` is set in the environment, `chromium.launch()` is called with `{ headless: true }`.
-- [ ] When `HEADLESS` is unset, `chromium.launch()` is called with `{ headless: false }`.
-- [ ] `.env.example` contains a commented `# HEADLESS=true` line with a brief explanation.
-- [ ] No other behaviour in `site.js` changes — only the `headless` launch option is affected.
+### TASK-010: Implement tee time discovery
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-008
+- **Acceptance criteria:**
+  - `selectCourse(courseName)` accepts `'Pines'` or `'Oaks'`, uses dropdown or filter buttons
+  - `selectDate(dateStr)` sets date via URL param first, then optionally clicks date picker
+  - `getAvailableTeeTimes()` finds all `button:has-text("Book Now")`, walks DOM up max 3 levels (text < 300 chars), extracts time via regex
+  - Returns `Array<{ time, text, element }>` with times in 24 h `HH:MM` format
+  - `findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded)` searches within window, verifies 5–15 min gaps between each consecutive slot
+  - `findSlotsInWindow(teeTimes, windowStart, windowEnd, maxSlots)` fallback — returns up to `maxSlots` sorted slots in window
+  - `_extractTime(text)` converts `h:mm AM/PM` strings to `HH:MM` 24 h
 
----
+### TASK-011: Implement `bookSlot()` — 4-player-only booking
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-010
+- **Acceptance criteria:**
+  - `bookSlot(element, slotIndex)` clicks the Book Now button for the given element
+  - Tries golfer count **4 only** (`preferenceOrder = [4]`)
+  - If 4-player option is not selectable (disabled or absent), returns `{ success: false, error: '4-player option unavailable' }` without booking fewer players
+  - Adds to cart on success; returns `{ success: true, screenshotPath }`
+  - Screenshots taken at key steps
 
-### TASK-005 · Extract reservation-scraping logic into `SiteAutomation.scrapeReservationHistory()`
+### TASK-012: Implement `completeCheckout()`
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-011
+- **Acceptance criteria:**
+  - Navigates the checkout flow: accept terms → Complete Your Purchase
+  - Extracts confirmation number from success page using regex matching both `Reservation #NUMBER` and `Confirmation #Name|NUMBER` formats
+  - Returns `{ success: true, confirmationNumber, screenshotPath }` on success
+  - Returns `{ success: false, error }` on failure
+  - Screenshot taken at checkout completion step
 
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | M |
-| **Priority** | P0 |
-| **Blocked by** | TASK-004 |
+### TASK-013: Implement `getExistingReservations(date)`
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-008
+- **Acceptance criteria:**
+  - Navigates to `/reservation/history`
+  - Paginates via NEXT button up to 20 pages
+  - For each card, clicks VIEW DETAILS (handles SPA navigation where URL may not change), extracts date/time/course/confirmation via full body text scan
+  - Confirmation number regex matches both `Reservation #NUMBER` and `Confirmation #Name|NUMBER` formats
+  - Returns `Array<{ date, time, course, confirmationNumber }>` filtered to the requested date
+  - Uses `goBack()` after each detail page; falls back to re-navigating the history URL if `goBack()` fails
 
-**Context.**
-`sync-reservations.js` contains standalone functions (`scrapeVisibleCards`, `fetchReservationById`, `extractDetailPage`) that implement the two-pronged scrape strategy. These must be moved into `site.js` as a method on `SiteAutomation` so `sync.js` can call them without duplicating browser logic. The root-level utility script will be superseded and removed after TASK-007.
+### TASK-014: Implement `cancelReservations(bookings)`
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-013
+- **Acceptance criteria:**
+  - Accepts array of booking objects with `confirmation_number`, `actual_time`, `course`
+  - Only attempts cancellation when `confirmation_number` matches `/^\d+$/`
+  - Navigates to `/reservation/history/{id}/cancel` for each
+  - Returns `{ cancelled, failed, details: [{ resNum, time, course, success, error? }] }`
 
-**Changes required.**
-- Move `extractDetailPage(page, fallbackId)` logic into a private `_extractDetailPage()` instance method on `SiteAutomation`.
-- Move `scrapeVisibleCards(page)` logic into `async scrapeReservationHistory()` public instance method — returns `Array<{ date, time, course, confirmationNumber }>`.
-- Move `fetchReservationById(page, id)` logic into `async fetchReservationById(id)` public instance method.
-- Both public methods use `this.page` rather than accepting a `page` parameter.
-- All `console.log` calls inside the moved methods are replaced with `this.logger.info(...)` / `this.logger.warn(...)` calls (consistent with how `site.js` handles logging elsewhere — check whether it uses a passed-in logger or `require('./logger')` directly).
-- The method signatures must be backwards-compatible with how `sync-reservations.js` called the standalone functions (same return shapes).
-
-**Acceptance Criteria:**
-- [ ] `site.scrapeReservationHistory()` returns an array of `{ date, time, course, confirmationNumber }` objects matching what the visible reservation list contains.
-- [ ] `site.fetchReservationById(id)` returns `{ date, time, course, confirmationNumber }` or `null` if the ID 404s.
-- [ ] Both methods require an active Playwright session (`this.page` must be initialised); calling them before `site.init()` throws a clear error.
-- [ ] Log output uses the existing Winston logger (not `console.log`).
-- [ ] The existing `getExistingReservations(date)` method in `site.js` is unchanged.
-
----
-
-### TASK-006 · Add `applyToDate` reconciliation logic to `db.js` as `reconcileDate()`
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | S |
-| **Priority** | P0 |
-| **Blocked by** | TASK-002 |
-
-**Context.**
-`sync-reservations.js` contains an `applyToDate(date, siteSlots, dbSlots, stats)` function that performs the order-based matching (site slots sorted by time, DB slots sorted by `slot_index`). This logic must be promoted into a proper module-level function accessible to `sync.js`, and must use the new `updateBookingSync` DB method and the Winston logger rather than `console.log`.
-
-**Changes required.**
-- Create a standalone exported async function `reconcileDate(date, siteSlots, dbSlots, logger)` in a new file `src/reconcile.js` (or alternatively add it directly to `sync.js` — agent's choice based on clarity).
-- The function signature: `(date: string, siteSlots: Array<{time, course, confirmationNumber}>, dbSlots: Array<booking_row>, logger) => Promise<{ updated: number, notFound: number, warnings: string[] }>`.
-- Matching logic: sort `siteSlots` ascending by time, sort `dbSlots` ascending by `slot_index`, pair positionally (slot 0 → earliest site reservation, etc.).
-- For each pair: if `actual_time` or `confirmation_number` differ from site data, call `db.updateBookingSync(id, { actualTime, course, confirmationNumber, restoreConfirmed: true })` and log at INFO with `[SYNC]` prefix: `"[SYNC] TASK-006 Updated booking #ID date DATE slot SLOT: actual_time OLD → NEW, confirmation_number OLD → NEW"`.
-- If a placeholder confirmation number (`EXISTING_RESERVATION`, `CONFIRMED`, `access`) is present in DB and the site provides a real numeric value, treat this as a needed update (FR-015).
-- If a DB slot has no corresponding site slot at that position, log a warning (FR-012) but do not change DB status.
-- Return `{ updated, notFound, warnings }`.
-
-**Acceptance Criteria:**
-- [ ] A DB slot with `actual_time = '08:00'` and `confirmation_number = 'EXISTING_RESERVATION'` is updated to `actual_time = '08:10'` and `confirmation_number = '418947571'` when the site slot at position 0 shows `{ time: '08:10', confirmationNumber: '418947571' }`.
-- [ ] A DB slot already matching the site data (same `actual_time`, same `confirmation_number`) is not written to the DB (no unnecessary update call).
-- [ ] A DB slot at position 2 with no corresponding site slot at position 2 is not modified; a warning string is added to the return `warnings` array.
-- [ ] All log entries include the `[SYNC]` prefix.
-- [ ] The function returns correct `{ updated, notFound, warnings }` counts.
-
----
-
-### TASK-007 · Build `src/sync.js` — `runSync()` orchestrator
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | M |
-| **Priority** | P0 |
-| **Blocked by** | TASK-003, TASK-005, TASK-006 |
-
-**Context.**
-This is the central sync module. It orchestrates: login (or reuse an existing session), scrape visible reservation list, group by date, apply `reconcileDate` for each date, run Step 2 direct-ID probes for dates still needing a real confirmation number, persist `lastSyncAt`, and return a summary object.
-
-**Changes required.**
-- Create `src/sync.js` exporting `async runSync(siteInstance = null)`.
-- If `siteInstance` is null, create a new `SiteAutomation()`, call `init()`, navigate to booking page, `login()`, and close when done (wrapped in try/finally).
-- If `siteInstance` is provided (for daily-job session reuse), skip `init()`/`login()`/`close()`.
-- Step 1: call `siteInstance.scrapeReservationHistory()` to get all visible upcoming reservations.
-- Step 2: identify DB bookings still carrying placeholder confirmation numbers. Collect any known numeric confirmation numbers from other DB records. For each known ID, call `siteInstance.fetchReservationById(id)` for IDs `± PROBE_RADIUS` (default 10, same as existing `sync-reservations.js` Step 2 logic). Apply results to dates still needing sync.
-- Apply `reconcileDate()` for each date found in Steps 1 and 2.
-- Log a `[SYNC]` WARNING per FR-012 for any `confirmed` DB booking with a real numeric confirmation number where the date was visible to the sync but no matching site reservation was found.
-- After all reconciliation, call `db.setLastSyncAt(new Date().toISOString())`.
-- Return `{ checked: N, updated: N, warnings: N, errors: N }` per FR-016.
-- Log start time, completion time, and summary at INFO level with `[SYNC]` prefix per FR-013.
-
-**Acceptance Criteria:**
-- [ ] `runSync()` called with no arguments completes without error when called against a live site with valid credentials.
-- [ ] After `runSync()`, all DB bookings for dates visible in the site's history window have correct `actual_time` and `confirmation_number` values matching the site.
-- [ ] `./data/sync-meta.json` is updated with the current ISO timestamp after a successful run.
-- [ ] The return value is an object with exactly `{ checked, updated, warnings, errors }` numeric keys.
-- [ ] Passing an existing authenticated `SiteAutomation` instance reuses it without calling `init()` or `login()` again.
-- [ ] All log lines include `[SYNC]` prefix.
-- [ ] A booking with `status = 'confirmed'`, a real numeric confirmation number, and a date within the site's visible window that is not found on the site triggers a `WARN` log (not a DB update).
+### TASK-015: Implement `scrapeReservationHistory()` and `fetchReservationById(id)`
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-013
+- **Acceptance criteria:**
+  - `scrapeReservationHistory()` returns all visible upcoming reservations as `Array<{ date, time, course, confirmationNumber }>`
+  - `fetchReservationById(id)` navigates directly to `/reservation/history/{id}`, extracts `{ date, time, course, confirmationNumber }`, returns `null` if not found or access denied
+  - Both methods require an active authenticated session; neither calls `init()` or `login()`
 
 ---
 
-### TASK-008 · Wire `npm run sync` CLI command to `src/sync.js`
+## Phase 3: Booking Engine
 
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | S |
-| **Priority** | P1 |
-| **Blocked by** | TASK-007 |
+### TASK-016: Implement `BookingEngine.run()` — main orchestration
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-004, TASK-006, TASK-011, TASK-012, TASK-013
+- **Acceptance criteria:**
+  - Flow: `computeBookingSlots()` → `db.ensureBookings()` → `db.getPendingBookings()` → `groupByDateAndTime()` → group by `golferIndex` → per-golfer session loop
+  - Per-golfer mode: `new SiteAutomation({ email, password })` → `init()` → `navigateToBooking()` → `login()` → `clearCart()` → process all this golfer's date groups → `close()` in `finally`
+  - Shared-site mode (when `opts.site` provided): reuses session, calls `clearCart()` before processing all groups
+  - BLOCKED error breaks the entire run and calls `notify.alertBlocked()`
+  - Dry-run mode: logs what would be booked with golfer assignments; returns `{ total, booked:0, failed:0, partial:0, dryRun:true }`; no browser launched
+  - Returns `{ total, booked, failed, partial }` stats
 
-**Context.**
-Currently `npm run sync` points to the root-level `sync-reservations.js`. After TASK-007, the canonical sync entry point is `src/sync.js`. The CLI command needs updating and the root-level script needs to be removed to avoid confusion.
+### TASK-017: Implement `BookingEngine._processGroup()` — date-level booking with fallback
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-016
+- **Acceptance criteria:**
+  - Pre-checks existing reservations via `getExistingReservations(date)`; matched slots marked `EXISTING_RESERVATION` confirmed and removed from pending list; unmatched slots proceed to booking
+  - Builds 10 attempts: preferred course × 5 time offsets `[0, -60, +60, -120, +120]` min, then other course × 5 offsets
+  - Skips any attempt where the shifted `windowStart` would fall below `00:00`
+  - `lockedCourse` set after first successful booking; subsequent attempts for the other course are skipped
+  - Calls `notify.alertSuccess`, `notify.alertPartialBooking`, or `notify.alertFailure` at end of group
+  - BLOCKED error propagated up to `run()`
 
-**Changes required.**
-- Add a `sync` command to `src/index.js` (Commander program): `program.command('sync').description('Sync DB with FWB site reservation history').action(async () => { const { runSync } = require('./sync'); const result = await runSync(); console.log('Sync complete:', JSON.stringify(result, null, 2)); process.exit(0); })`.
-- Update `package.json` `scripts.sync` from `"node sync-reservations.js"` to `"node src/index.js sync"`.
-- Delete `sync-reservations.js` from the project root.
-- Delete `update-saturdays.js` and `find-saturdays.js` from the project root (superseded by the new automated sync).
+### TASK-018: Implement `BookingEngine._bookSlots()` — individual slot booking loop
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-017
+- **Acceptance criteria:**
+  - Re-navigates, re-selects course, and re-scans tee times before each slot (element refs go stale after navigation)
+  - Calls `bookSlot()` then `completeCheckout()`
+  - Marks DB `confirmed` on success with `actualTime`, `course`, `confirmationNumber`, `screenshotPath`
+  - Marks DB `failed` on booking or checkout failure with error message
+  - Uses `'CONFIRMED'` as placeholder `confirmationNumber` only when checkout page provides no numeric ID
+  - 2-second wait between slots
+  - Tracks `_bookedSlotIds` set so caller can filter out already-booked slots after partial success
 
-**Acceptance Criteria:**
-- [ ] `npm run sync` runs `src/index.js sync` and prints the summary JSON to stdout.
-- [ ] `node src/index.js sync` produces `[SYNC]` log output in `golf-scheduler.log`.
-- [ ] `sync-reservations.js` no longer exists in the project root.
-- [ ] `update-saturdays.js` and `find-saturdays.js` no longer exist in the project root.
-- [ ] `npm run book`, `npm run scheduler`, `npm run status`, `npm run web`, `npm run cancel` all continue to work (no regressions in other commands).
+### TASK-019: Gap fix — multi-batch split for > 3 slots per transaction (Section 19)
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-018
+- **Acceptance criteria:**
+  - `_bookSlots()` or a wrapper detects when `slots.length > 3`
+  - Splits into batches of at most 3 slots each
+  - Each batch completes its own full checkout flow before the next batch begins
+  - All batches book exactly 4 players per slot
+  - Log line emitted when a batch split is triggered: how many batches, how many slots each
+  - Single-batch path (≤ 3 slots) unchanged
 
----
-
-### TASK-009 · Replace 6-hour interval scheduler with daily 06:00 cron using `setTimeout`
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | M |
-| **Priority** | P0 |
-| **Blocked by** | TASK-007, TASK-008 |
-
-**Context.**
-`src/index.js` `scheduler` command uses `setInterval(runOnce, 6 * 60 * 60 * 1000)`. This must be replaced with a `setTimeout`-based loop that always fires at 06:00 local time (or `SCHEDULER_HOUR` if set). The daily job sequence is: sync → book. If the startup time is already past today's fire time, it must run immediately and then schedule tomorrow's 06:00 fire.
-
-**Changes required.**
-- Add `SCHEDULER_HOUR` env var reading in `config.js` (default `6`).
-- Rewrite the `scheduler` command's `action` handler in `src/index.js`:
-  - Compute `msUntilNextFire(hour)`: using `dayjs().tz(config.timezone)`, find next occurrence of HH:00 that is in the future. If 0 ms remain (past today's fire time and we haven't run yet today), return 0 (run immediately).
-  - On each fire: log `[SCHEDULER] Daily job starting at ${now.format()}`, call `runSync()` then `BookingEngine.run()` (sharing the `SiteAutomation` session if possible — see TASK-010), log summary, then schedule next fire with `setTimeout(runOnce, msUntilNextFire)`.
-  - Set `HEADLESS=true` for the environment before launching the daily job processes (or pass as option).
-- The "run immediately on startup if past fire time" logic implements FR-023.
-
-**Acceptance Criteria:**
-- [ ] `npm run scheduler` starts without error and logs `[SCHEDULER] Daily job starting` at the correct 06:00 local time.
-- [ ] If the process starts at 07:00, the job runs immediately (not waiting until next-day 06:00).
-- [ ] If the process starts at 05:00, the job waits until 06:00 before running.
-- [ ] After a run completes, the next fire is scheduled for 06:00 the following day.
-- [ ] `SCHEDULER_HOUR=8` in `.env` changes the fire time to 08:00 without any code change.
-- [ ] Both sync and booking engine run in sequence; a sync failure is caught, logged, and the booking engine still runs.
-
----
-
-### TASK-010 · Share `SiteAutomation` session between sync and booking engine in daily job
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | S |
-| **Priority** | P0 |
-| **Blocked by** | TASK-009 |
-
-**Context.**
-FR-021 requires that sync and booking run in the same Playwright session "where possible to reduce overhead and login round-trips." `runSync(siteInstance)` already accepts an optional instance (TASK-007). `BookingEngine` currently creates its own `SiteAutomation` internally. The daily job must create one shared session, pass it to both.
-
-**Changes required.**
-- Add an optional `site` parameter to `BookingEngine` constructor: `constructor({ dryRun = false, site = null } = {})`. When `site` is provided, use it instead of creating a new `SiteAutomation()`. Skip `site.init()` and `site.login()` in `BookingEngine.run()` — assume already authenticated.
-- In the daily job's `runOnce()` function (TASK-009), create `const site = new SiteAutomation()`, call `site.init()` and `site.login()`, then pass to `runSync(site)` and `new BookingEngine({ site }).run()`. Call `site.close()` in a `finally` block.
-- Ensure `BookingEngine.run()` does NOT call `site.close()` when a shared site instance is provided.
-
-**Acceptance Criteria:**
-- [ ] The daily job creates exactly one Playwright browser instance per run (verified by checking that only one Chromium window/process is spawned).
-- [ ] `BookingEngine` constructed with a `site` instance does not call `site.init()`, `site.login()`, or `site.close()`.
-- [ ] `BookingEngine` constructed without a `site` instance behaves identically to current behaviour (creates its own session, closes it).
-- [ ] If `runSync()` throws, the shared `site` is still closed cleanly in the `finally` block.
+### TASK-020: Gap fix — `verifyBookingOnSite` post-checkout verification (Section 19)
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-013, TASK-018
+- **Acceptance criteria:**
+  - `SiteAutomation.verifyBookingOnSite(date, time)` navigates to the Reservations page and checks for a reservation matching date and time (±15 min tolerance)
+  - Called from `_bookSlots()` after `completeCheckout()` returns a numeric confirmation number
+  - If verification fails: slot marked `failed` instead of `confirmed`; `WARN` log emitted
+  - If Reservations page is unreachable or times out: verification skipped with a warning; slot remains `confirmed`
+  - Existing trust-confirmation-page behaviour is retained as the fallback when `verifyBookingOnSite` is skipped
 
 ---
 
-### TASK-011 · Log daily job start/completion summary at INFO level
+## Phase 4: Sync Engine
 
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | XS |
-| **Priority** | P0 |
-| **Blocked by** | TASK-010 |
+### TASK-021: Implement `src/reconcile.js` — positional pairing logic
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-004
+- **Acceptance criteria:**
+  - Exports `reconcileDate(date, siteSlots, dbSlots, logger)` as async function
+  - Filters `dbSlots` to `PAIRABLE_STATUSES` (`confirmed`, `pending`, `cancelled`), sorts by `slot_index`
+  - Sorts `siteSlots` ascending by time
+  - Pairs positionally; calls `db.updateBookingSync()` when `actual_time` differs or DB has a placeholder confirmation and site has a real numeric ID
+  - No DB write when pair is already in sync
+  - Returns `{ updated, notFound, warnings[] }`
+  - Contains no browser or site I/O
 
-**Context.**
-FR-022 requires the daily job to log its start time, completion time, and a combined sync + booking summary. This is a small addition to the daily job's `runOnce()` function once TASK-010 is in place.
-
-**Changes required.**
-- At the start of `runOnce()`, log: `[SCHEDULER] === Daily job started at ${startTime.format('YYYY-MM-DD HH:mm:ss z')} ===`.
-- After sync completes, log: `[SCHEDULER] Sync result: checked=${r.checked} updated=${r.updated} warnings=${r.warnings} errors=${r.errors}`.
-- After booking engine completes, log: `[SCHEDULER] Booking result: total=${s.total} booked=${s.booked} failed=${s.failed}`.
-- At the end, log: `[SCHEDULER] === Daily job completed in ${elapsed}ms ===`.
-
-**Acceptance Criteria:**
-- [ ] `golf-scheduler.log` contains all four log lines after a daily job run.
-- [ ] Elapsed time in milliseconds is accurately computed (end - start timestamps).
-- [ ] Log lines use the `[SCHEDULER]` prefix consistently.
-- [ ] If sync throws, the start/completion log lines still appear (surrounding the error log).
-
----
-
-### TASK-012 · Add `SCHEDULER_HOUR` to `config.js` and `.env.example`
-
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | XS |
-| **Priority** | P2 |
-| **Blocked by** | TASK-009 |
-
-**Context.**
-FR-025 specifies a `SCHEDULER_HOUR` env var. TASK-009 reads it but this task ensures it is properly defined in `config.js` (parsed, validated, defaulted) and documented in `.env.example`.
-
-**Changes required.**
-- In `config.js`, add `schedulerHour: parseInt(process.env.SCHEDULER_HOUR || '6', 10)` to the exported config object.
-- Validate: if `schedulerHour < 0 || schedulerHour > 23`, log an error and default to 6.
-- Update TASK-009's implementation to read `config.schedulerHour` rather than directly reading `process.env.SCHEDULER_HOUR`.
-- Add `# SCHEDULER_HOUR=6` with a comment to `.env.example`.
-
-**Acceptance Criteria:**
-- [ ] `config.schedulerHour` is `6` when `SCHEDULER_HOUR` is not set.
-- [ ] `SCHEDULER_HOUR=8` in `.env` results in `config.schedulerHour === 8`.
-- [ ] An out-of-range value (e.g., `SCHEDULER_HOUR=25`) is caught and defaults to `6` with a warning log.
-- [ ] `.env.example` includes the new variable with a description comment.
+### TASK-022: Implement `src/sync.js` — two-phase sync orchestrator
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-015, TASK-021
+- **Acceptance criteria:**
+  - `runSync(siteInstance?)` accepts an optional pre-authenticated session; creates and owns its own session when null
+  - Phase 1: `scrapeReservationHistory()` → builds `siteByDate` map; records `step1VisibleDates`
+  - Phase 2: identifies DB rows with placeholder confirmation numbers; collects known numeric IDs; probes ±`PROBE_RADIUS` (10) IDs via `fetchReservationById()`; merges hits into `siteByDate`
+  - Phase 3: calls `reconcileDate()` for each date in `siteByDate`
+  - FR-012: emits `[SYNC] WARN` for any confirmed booking with a real numeric confirmation whose date was in `step1VisibleDates` but has zero matching site slots
+  - Writes `lastSyncAt` to `sync-meta.json` via `db.setLastSyncAt()`
+  - Returns `{ checked, updated, warnings, errors }`
+  - All log lines prefixed `[SYNC]`
+  - Phase 1 failure is caught and logged; Phase 2 and Phase 3 still execute
 
 ---
 
-### TASK-013 · Implement new CSS design tokens and global mobile-first base styles
+## Phase 5: CLI and Daily Scheduler
 
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | M |
-| **Priority** | P0 |
-| **Blocked by** | TASK-001 |
+### TASK-023: Implement `src/index.js` — Commander CLI
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-016, TASK-022
+- **Acceptance criteria:**
+  - Commands: `book` (default, with `--dry-run` option), `status`, `init`, `scheduler`, `web`, `cancel <date>`, `sync`
+  - `status` prints aligned table: date, day_label, target_time, slot_index, status, confirmation_number, attempts; summary line with confirmed/pending/failed counts
+  - `init` calls `computeBookingSlots()` then `db.ensureBookings()`
+  - `cancel <date>` accepts `YYYY-MM-DD`, `MM/DD`, `MM-DD`; normalises to `YYYY-MM-DD`; cancels site reservations with real numeric confirmation numbers via `site.cancelReservations()`; marks DB cancelled on success
+  - `sync` calls `runSync()`, prints JSON result, exits 0
+  - `book` exits code 1 if any slots failed, 0 otherwise (non-dry-run)
 
-**Context.**
-FR-030, FR-032. The current palette is built around `#cb6301` (burnt orange). All CSS lives inline in `web.js` as a template string. This task replaces the colour values with the PRD-specified tokens and ensures the base layout has no horizontal scroll at 375px. No structural HTML changes yet — those come in later tasks.
-
-**Design tokens to apply (replace existing colour values):**
-| Token | Value |
-|---|---|
-| `--bg-page` | `#F8F9FA` |
-| `--bg-card` | `#FFFFFF` |
-| `--bg-header` | `#1B3A2D` |
-| `--text-primary` | `#1A1A1A` |
-| `--text-secondary` | `#6B7280` |
-| `--accent-confirmed` | `#2D6A4F` |
-| `--accent-pending` | `#B45309` |
-| `--accent-failed` | `#DC2626` |
-| `--accent-cancelled` | `#9CA3AF` |
-| `--accent-action` | `#1B3A2D` |
-| `--border` | `#E5E7EB` |
-
-**Changes required:**
-- Declare all tokens as CSS custom properties on `:root`.
-- Replace every hardcoded `#cb6301`, `#a84f00` etc. with the corresponding token reference.
-- Set `body { max-width: 100%; overflow-x: hidden; }`.
-- Set `img, table, .calendar { max-width: 100%; }`.
-- Verify WCAG AA contrast for all text-on-background pairs (can be spot-checked manually using the values above — confirmed-on-white is `#2D6A4F` which is 5.8:1, pending-on-white `#B45309` is 4.6:1, header text white-on-`#1B3A2D` is 9.8:1).
-
-**Acceptance Criteria:**
-- [ ] No `#cb6301` or `#a84f00` values remain anywhere in the CSS.
-- [ ] The page header background is `#1B3A2D` (dark green).
-- [ ] Confirmed chips are `#2D6A4F` (muted green).
-- [ ] Pending chips are `#B45309` (amber).
-- [ ] The page renders without a horizontal scrollbar at 375px viewport width in browser DevTools mobile simulation.
-- [ ] All status colour pairs pass WCAG AA (4.5:1) when checked with a contrast tool.
+### TASK-024: Implement daily scheduler in `scheduler` CLI command
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-023
+- **Acceptance criteria:**
+  - Forces `HEADLESS=true` on startup
+  - `msUntilNextFire(hour)` calculates ms until next `SCHEDULER_HOUR:00` in `config.timezone` — returns positive ms for a future target, moves to tomorrow if target has already passed today
+  - FR-023: if startup time is at or past today's fire hour, `runOnce()` fires immediately; otherwise schedules with `setTimeout`
+  - Each cycle: creates primary `SiteAutomation` → `init()` → `navigateToBooking()` → `login()` → `runSync(site)` → `site.close()` in `finally` → `new BookingEngine().run()` → `setTimeout(runOnce, delay)` for next cycle
+  - Sync failure logged but does not prevent booking phase from running
+  - All log lines prefixed `[SCHEDULER]`
+  - Pure `setTimeout` chain — no `setInterval`
 
 ---
 
-### TASK-014 · Add mobile list view (< 640px): collapse calendar grid to booking-card list
+## Phase 6: Web UI
 
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | M |
-| **Priority** | P0 |
-| **Blocked by** | TASK-013 |
+### TASK-025: Implement Express server skeleton — `src/web.js`
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-004
+- **Acceptance criteria:**
+  - Express app on `PORT` env var (default 3002)
+  - HTTPS: when `HTTPS_ENABLED=true`, loads `data/certs/cert.pem` and `data/certs/key.pem` and creates `https.Server`; otherwise plain HTTP
+  - `isLocalIP(ip)` returns true for `::1`, `127.0.0.1`, `192.168.*`, `10.*`, `172.*`
+  - `startServer()` exported and called by the `web` CLI command
+  - Missing cert files with `HTTPS_ENABLED=true` produce a clear startup error before exit
 
-**Context.**
-FR-031. On narrow screens the 7-column grid becomes unreadable. Below 640px, the calendar must switch to a vertical list showing only days that have bookings, each as a card with: date, day name, time, course, and status badge.
+### TASK-026: Implement access logging middleware and geo enrichment
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-025
+- **Acceptance criteria:**
+  - Middleware records all external (non-local) requests: timestamp, IP, method, path, browser, OS, device, UA, referrer
+  - `parseUA(ua)` extracts browser/OS/device from User-Agent string
+  - `geoLookup(ip, entry)` calls `http://ip-api.com/json/{ip}` asynchronously; updates entry with country, city, ISP, geoTz; saves log after update
+  - `ACCESS_LOG` in-memory array (max 500 entries); loaded from `data/access-log.json` on startup; saved after each new entry
+  - `GET /api/ping` endpoint: `Access-Control-Allow-Origin: *`, logs external hits with `ref` and `page` query params, returns 204
 
-**Changes required in `web.js`:**
-- In `generateCalendarHTML()`, add a `mobile-list` div alongside the existing `.calendar` grid. The mobile list is a `<div class="mobile-booking-list">` containing one `<div class="mobile-booking-card">` per day that has bookings. Each card shows: date header (e.g., "Saturday, March 7"), then per-booking chips (same `booking-chip` elements reused).
-- Add CSS:
-  ```css
-  @media (max-width: 639px) {
-    .calendar { display: none; }
-    .mobile-booking-list { display: block; }
-  }
-  @media (min-width: 640px) {
-    .mobile-booking-list { display: none; }
-  }
-  ```
-- Mobile booking card styling: `padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); margin-bottom: 8px;`.
-- Date header within card: `font-family: 'Manrope'; font-weight: 700; font-size: 1rem; color: var(--text-primary); margin-bottom: 8px;`.
-- Booking chips in mobile list must meet the 44px minimum touch target height (FR-033): `min-height: 44px; display: flex; align-items: center; padding: 10px 12px;`.
+### TASK-027: Implement `GET /api/bookings` and booking trigger endpoints
+- **Owner:** frontend-developer
+- **Effort:** XS
+- **Blocked by:** TASK-025, TASK-004
+- **Acceptance criteria:**
+  - `GET /api/bookings` returns `{ bookings, lastSyncAt }` JSON with no auth requirement
+  - `POST /api/book-month` spawns `node src/index.js book` as a detached child process; returns `{ success: true, message }` immediately without waiting for completion
+  - `POST /api/book-day` (local IP only): accepts `{ date, targetTime, course, slots }`; inserts custom booking slots via `db.ensureBookings()`; spawns detached booking process; returns 403 for external IPs
 
-**Acceptance Criteria:**
-- [ ] At 375px viewport, the 7-column grid is hidden and the mobile list is visible.
-- [ ] At 640px and above, the mobile list is hidden and the grid is visible.
-- [ ] Each mobile booking card shows the full date + day name as a heading and one chip per booking.
-- [ ] Booking chips in the mobile list have a minimum height of 44px and are tappable.
-- [ ] Days with no bookings do not appear in the mobile list (only booked days shown).
-- [ ] Tapping a chip on mobile opens the booking detail modal correctly.
+### TASK-028: Implement `POST /api/cancel/:id`
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-025, TASK-014
+- **Acceptance criteria:**
+  - Validates `id` is a positive integer; returns 400 otherwise
+  - Returns 404 if booking not found
+  - If `confirmation_number` is not a real numeric ID: marks DB cancelled, returns `{ success: true }`
+  - If real numeric ID: creates `SiteAutomation`, logs in, calls `cancelReservations([booking])`; marks DB cancelled on success; returns `{ success: false, error }` on site failure
+  - Browser session always closed in `finally`
 
----
+### TASK-029: Implement calendar HTML page — `GET /`
+- **Owner:** frontend-developer
+- **Effort:** L
+- **Blocked by:** TASK-027, TASK-028
+- **Acceptance criteria:**
+  - Server-rendered HTML showing current month and next month
+  - Chip colours: `chip-confirmed` green (`#2D6A4F`), `chip-pending` amber (`#B45309`), `chip-failed`/`chip-partial` red (`#DC2626`), `chip-cancelled` grey + line-through, `chip-skipped` hidden (`display:none`)
+  - Clicking a chip opens a detail modal with: date, day, confirmed time, target time, course, players, booked-by golfer (`Golfer N (email)`), status, confirmation number (sentinel values `EXISTING_RESERVATION`/`CONFIRMED`/`access` displayed as `—`)
+  - Admin controls (Schedule Month, Book Now) rendered only for local IPs
+  - `GOLFERS` JSON array embedded in page script for client-side golfer label lookup
+  - "Last synced" timestamp in header formatted in `config.timezone`; shows `Never` when `lastSyncAt` is null
+  - Fonts: Inter + Manrope from Google Fonts
+  - WCAG AA contrast ratios met for all text/background pairs
 
-### TASK-015 · Ensure 44px touch targets on all interactive elements (mobile)
+### TASK-030: Implement mobile-responsive layout
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-029
+- **Acceptance criteria:**
+  - At viewport < 640 px, calendar grid collapses to `.mobile-booking-list` card view
+  - No horizontal overflow at 375 px viewport width; `overflow-x: hidden` on body; `max-width: 100%` on images and calendar
+  - Floating zoom widget hidden on mobile (`display:none` at < 640 px)
+  - Modal box uses `width: 90%` on small screens
+  - Touch targets meet 44×44 px minimum
 
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P0 |
-| **Blocked by** | TASK-014 |
+### TASK-031: Implement auto-refresh and modal keyboard handling
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-029
+- **Acceptance criteria:**
+  - Client-side `refreshChips()` polls `GET /api/bookings` every 60 seconds and updates chip DOM without a full page reload
+  - Polling paused while any modal is open; resumes on modal close
+  - Modal closes on Escape key and on overlay click
+  - Modal has ARIA roles: `role="dialog"`, `aria-modal="true"`, `aria-labelledby`
+  - Focus trapped inside modal while open; returns to trigger element on close
 
-**Context.**
-FR-033. Beyond the chips addressed in TASK-014, the month navigation buttons, "Schedule Month" / "Book Now" buttons, and the Cancel buttons in the table must all meet the 44px minimum touch target on mobile.
-
-**Changes required:**
-- Add `@media (max-width: 639px)` rules for `.month-nav button`, `.btn-schedule-month`, `.btn-cancel-row`: `min-height: 44px; padding: 10px 16px;`.
-- Modal action buttons (`.btn`) already have `padding: 9px 18px` — verify total height reaches 44px when Inter 0.9rem is applied; add `min-height: 44px` if not.
-- Add `aria-label` attributes to all icon-only or ambiguous buttons: the zoom widget buttons (`aria-label="Decrease text size"` / `aria-label="Increase text size"`), the "Close" modal button.
-
-**Acceptance Criteria:**
-- [ ] All tappable elements measure >= 44px in height at 375px viewport in DevTools.
-- [ ] Month navigation and schedule/book buttons have visible focus outlines on keyboard tab.
-- [ ] Zoom buttons have descriptive `aria-label` attributes.
-- [ ] Close and Cancel modal buttons have `aria-label` or contain sufficient visible text.
-- [ ] No regressions on desktop layout (buttons are not made unnecessarily large above 640px).
-
----
-
-### TASK-016 · Hide zoom widget on mobile viewports
-
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | XS |
-| **Priority** | P1 |
-| **Blocked by** | TASK-013 |
-
-**Context.**
-FR-034. The floating zoom widget at bottom-right is irrelevant on touch devices (users pinch-to-zoom) and wastes screen space. It should be hidden below 640px.
-
-**Changes required:**
-- Add `@media (max-width: 639px) { #zoom-control { display: none !important; } }` to the CSS block in `web.js`.
-
-**Acceptance Criteria:**
-- [ ] The zoom widget is not visible at 375px viewport width.
-- [ ] The zoom widget is still visible and functional at 640px and above.
-- [ ] The `localStorage` zoom preference saved on desktop does not interfere with mobile rendering.
-
----
-
-### TASK-017 · Add `overflow-x: auto` wrapper to the "All Bookings" table on mobile
-
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | XS |
-| **Priority** | P1 |
-| **Blocked by** | TASK-013 |
-
-**Context.**
-FR-035. The 10-column detail table overflows on 375px screens. The simplest compliant fix is wrapping it in a scrollable container so layout is not broken.
-
-**Changes required:**
-- Wrap the `<table class="detail-table">` in a `<div class="table-scroll-wrapper">`.
-- Add CSS: `.table-scroll-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }`.
-- Add a minimum width to each `th`/`td` so columns don't collapse illegibly: `th, td { min-width: 80px; white-space: nowrap; }` scoped inside `.detail-table`.
-
-**Acceptance Criteria:**
-- [ ] At 375px viewport, the table is horizontally scrollable without causing a page-level horizontal scrollbar.
-- [ ] All 10 columns remain visible and correctly labelled at any viewport width (no columns hidden).
-- [ ] Table still renders normally at desktop widths.
+### TASK-032: Implement `GET /admin` — access log dashboard
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-026, TASK-025
+- **Acceptance criteria:**
+  - Returns 403 for any non-local IP
+  - Stats cards: Total Visits, Unique IPs, Mobile count, Countries count
+  - Visit table columns: Time (in `config.timezone`), IP, Location (flag + city/region/country), ISP, Device badge (Mobile/Tablet/Desktop), Browser, OS, Request (method + path), User-Agent (truncated at 60 chars with `title` tooltip)
+  - Auto-refreshes every 30 seconds via `setTimeout(location.reload, 30000)`
+  - Consistent design tokens with main calendar page (Inter/Manrope fonts, `#1B3A2D` header background)
 
 ---
 
-### TASK-018 · Add "Last synced" timestamp to page header
+## Phase 7: Utility Scripts
 
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P1 |
-| **Blocked by** | TASK-003, TASK-013 |
+### TASK-033: Implement `cancel-rebook.js` — batch cancel and re-book
+- **Owner:** backend-architect
+- **Effort:** M
+- **Blocked by:** TASK-014, TASK-016
+- **Acceptance criteria:**
+  - `FROM_DATE` constant configurable at top of file
+  - Phase 1: logs in as `golfers[0]`; scrapes all upcoming site reservations using scroll + VIEW DETAILS iteration; filters to `date >= FROM_DATE` with real numeric confirmation numbers; cancels each via `cancelReservations()`
+  - Phase 2: runs `new BookingEngine().run()` — uses per-golfer rotation for re-booking
+  - Prints cancellation and booking stats to console
+  - Fatal errors caught at top level; process exits with code 1
 
-**Context.**
-FR-036. The header must show when the data was last synced so group members know how fresh the information is. The value is read from `./data/sync-meta.json` by `db.getLastSyncAt()`.
+### TASK-034: Implement `fix-confirmations.js` — placeholder confirmation number repair
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-013
+- **Acceptance criteria:**
+  - Queries DB for `status='confirmed'` rows with placeholder confirmation numbers (`EXISTING_RESERVATION`, `access`, `CONFIRMED`, or any non-numeric value)
+  - Groups by date; navigates Reservations page for each date
+  - Matches site reservation to DB slot by time proximity (±15 min)
+  - Updates DB with real numeric confirmation number via `db.updateBookingSync()`
+  - Prints updated/not-found counts to console
+  - Dates beyond the ~7-day site display window handled gracefully with a logged warning
 
-**Changes required in `web.js`:**
-- In the `GET /` handler, call `const lastSyncAt = db.getLastSyncAt()` (sync/non-async function per TASK-003).
-- Format it as `"Last synced: YYYY-MM-DD HH:mm"` in the configured timezone using `dayjs`. If `lastSyncAt` is null, display `"Last synced: Never"`.
-- Add the formatted string to the header HTML: replace the existing `.stats` div or add a second line below it. Example: `<div class="last-sync">Last synced: ${formattedSync}</div>`.
-- Style `.last-sync { font-size: 0.8rem; opacity: 0.75; margin-top: 2px; }`.
-
-**Acceptance Criteria:**
-- [ ] The header shows "Last synced: YYYY-MM-DD HH:mm" after a successful `runSync()` call updates `sync-meta.json`.
-- [ ] When `sync-meta.json` does not exist (fresh install), the header shows "Last synced: Never".
-- [ ] The timestamp is shown in the configured timezone (not UTC), formatted as local time.
-- [ ] The display is readable on both desktop and 375px mobile without layout overflow.
-
----
-
-### TASK-019 · Implement modal keyboard accessibility (focus trap + Escape)
-
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P1 |
-| **Blocked by** | TASK-015 |
-
-**Context.**
-PRD Section 6.3 Accessibility requires the modal to be keyboard-navigable: focusable, closeable with Escape (already partially implemented in current code), and must trap focus while open. The current code handles Escape via `document.keydown` but does not trap focus (Tab key can exit the modal).
-
-**Changes required:**
-- When `openModal()` is called, set `document.getElementById('modal-overlay').setAttribute('tabindex', '-1')` and call `.focus()` on the first focusable element inside the modal.
-- Add a `keydown` listener inside the modal that intercepts Tab: if Tab is pressed while the last focusable element has focus, move focus to the first focusable element (and vice versa for Shift+Tab). Focusable elements: `btn-close-modal`, `btn-cancel-res` (when visible).
-- When `closeModal()` is called, restore focus to the element that triggered the modal open (save a reference in `openModal`).
-- Verify Escape to close still works (already present).
-- Add `role="dialog"`, `aria-modal="true"`, and `aria-labelledby="modal-title-id"` to `.modal-box`. Add `id="modal-title-id"` to `.modal-title`.
-
-**Acceptance Criteria:**
-- [ ] Opening a modal via keyboard (Enter on a chip) moves focus to the first focusable button inside the modal.
-- [ ] Pressing Tab cycles focus only within the modal (does not escape to page content).
-- [ ] Pressing Escape closes the modal and returns focus to the element that opened it.
-- [ ] `.modal-box` has `role="dialog"` and `aria-modal="true"`.
-- [ ] Screen reader can announce the modal title via `aria-labelledby`.
+### TASK-035: Implement `get-cert.js` — Let's Encrypt TLS certificate via DuckDNS
+- **Owner:** deployment-engineer
+- **Effort:** M
+- **Blocked by:** TASK-001
+- **Acceptance criteria:**
+  - Requires `DUCKDNS_TOKEN`, `DUCKDNS_DOMAIN`, `GOLF_EMAIL` in `.env`; exits with clear error if any are missing
+  - Uses `acme-client` with Let's Encrypt production directory
+  - DNS-01 challenge: sets `_acme-challenge.{domain}` TXT record via DuckDNS API; polls Google resolver (8.8.8.8) for propagation with 3-minute timeout
+  - Saves `cert.pem` and `key.pem` to `data/certs/`; caches ACME account key at `data/certs/account-key.pem`
+  - Clears TXT record in a `finally` block regardless of success or failure
+  - Re-runnable for renewal
 
 ---
 
-### TASK-020 · Add admin action buttons to mobile view and style Cancel as destructive
+## Phase 8: Deployment and Infrastructure
 
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P1 |
-| **Blocked by** | TASK-014, TASK-015 |
+### TASK-036: Implement `Dockerfile` — containerised deployment image
+- **Owner:** deployment-engineer
+- **Effort:** S
+- **Blocked by:** TASK-001
+- **Acceptance criteria:**
+  - Base image is a Node.js LTS variant
+  - `npm install` layer cached before copying source
+  - `npx playwright install --with-deps chromium` run during image build
+  - `data/` directory created as a volume mount point
+  - Default `CMD` runs `npm run scheduler` with `HEADLESS=true`
+  - No dev dependencies in final layer
 
-**Context.**
-FR-037. The "Schedule Month" and "Book Now" buttons are in the `month-nav` div which is visible in both the grid and mobile list views (the `month-nav` div is rendered outside the `.calendar` div). Verify they are visible on mobile and properly sized. The Cancel buttons in the table are accessible via the modal on mobile (the table itself scrolls per TASK-017). Confirm Cancel button styling is clearly destructive (red, labelled).
+### TASK-037: Implement `docker-compose.yml` — local and production compose config
+- **Owner:** deployment-engineer
+- **Effort:** S
+- **Blocked by:** TASK-036
+- **Acceptance criteria:**
+  - Service `golf-scheduler` built from local `Dockerfile`
+  - `./data` bind-mounted to `/app/data` for DB, sync metadata, and cert persistence
+  - `./screenshots` bind-mounted for screenshot persistence
+  - Port 3002 exposed (and 443 when HTTPS enabled)
+  - `.env` file referenced for secrets — no hard-coded credentials
+  - `restart: unless-stopped` policy set
 
-**Changes required:**
-- Verify `.month-nav` is not inside `.calendar` grid (it is currently outside — confirm no change needed).
-- Ensure the "Schedule Month" / "Book Now" buttons use `var(--accent-action)` background (dark green per new palette).
-- Add `aria-label="Cancel reservation for [date]"` to each `.btn-cancel-row` button. The `[date]` can be populated server-side.
-- Confirm `.btn-cancel-res` in the modal has red background `var(--accent-failed)` and text "Cancel Reservation" (already present — verify unchanged).
-- On mobile, the Cancel column of the table may be hard to reach. Add a "Cancel" button to the mobile booking card (in the mobile list view from TASK-014) that calls `openModal(chip.dataset)` for the booking.
-
-**Acceptance Criteria:**
-- [ ] "Schedule Month" and "Book Now" buttons are visible and tappable (44px height) on 375px viewport.
-- [ ] Buttons use the dark green `#1B3A2D` colour (no orange).
-- [ ] Cancel buttons in both table and mobile card are red and labelled "Cancel".
-- [ ] Each Cancel button in the table has a descriptive `aria-label` including the booking date.
-- [ ] Tapping a Cancel button on mobile opens the modal correctly.
-
----
-
-### TASK-021 · Add auto-refresh (60-second polling) to web page
-
-| Field | Value |
-|---|---|
-| **Owner** | frontend-developer |
-| **Effort** | S |
-| **Priority** | P2 |
-| **Blocked by** | TASK-014, TASK-018 |
-
-**Context.**
-FR-038. Group members viewing the calendar on their phones should see updated booking status without manually reloading. A 60-second `setInterval` polls `GET /api/bookings` and updates only the booking chip areas (not a full page reload) to avoid disrupting any open modal.
-
-**Changes required:**
-- In the client-side `<script>` block, add a function `refreshChips()` that:
-  - Fetches `GET /api/bookings`.
-  - For each returned booking, finds the existing chip with matching `data-id` and updates its class and text content if the status or time has changed.
-  - Adds new chips for any bookings not yet in the DOM (edge case: newly created slots).
-  - Updates the header stats line (Confirmed / Pending / Failed counts).
-  - Updates the "Last synced" text if the API response includes a `lastSyncAt` field.
-- Add `GET /api/bookings` to include `lastSyncAt` in its response: `res.json({ bookings, lastSyncAt: db.getLastSyncAt() })` — update the existing endpoint in `web.js`.
-- Call `setInterval(refreshChips, 60000)` after page load.
-- Do NOT refresh if a modal is currently open (`activeId !== null`) — prevent disruptive re-renders.
-
-**Acceptance Criteria:**
-- [ ] Without manual reload, booking chips update within 60 seconds of a DB status change.
-- [ ] The header stats (Confirmed / Pending counts) update automatically.
-- [ ] When a modal is open, the auto-refresh is paused (no chip update while modal is visible).
-- [ ] `GET /api/bookings` returns `{ bookings: [...], lastSyncAt: "..." }` (or `null` if never synced).
-- [ ] No full page reload occurs during auto-refresh (no `location.reload()` call in `refreshChips`).
+### TASK-038: Implement `setup-scheduler.ps1` — Windows startup registration
+- **Owner:** deployment-engineer
+- **Effort:** S
+- **Blocked by:** TASK-024
+- **Acceptance criteria:**
+  - PowerShell script registers the scheduler as a Windows Task Scheduler task or NSSM service
+  - Sets `HEADLESS=true` in the task environment
+  - Sets working directory to the repo root
+  - Documents how to check task status and view logs
+  - Re-running the script updates (not duplicates) an existing task registration
 
 ---
 
-### TASK-022 · End-to-end manual verification and cleanup of root-level utility scripts
+## Phase 9: Gap Closure and Edge-Case Hardening
 
-| Field | Value |
-|---|---|
-| **Owner** | backend-architect |
-| **Effort** | S |
-| **Priority** | P1 |
-| **Blocked by** | TASK-008, TASK-011, TASK-020, TASK-021 |
+### TASK-039: Verify and harden BLOCKED error short-circuit
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-017
+- **Acceptance criteria:**
+  - Any error whose `.message` starts with `'BLOCKED'` immediately stops the entire booking run
+  - `notify.alertBlocked()` called exactly once per BLOCKED event
+  - The current golfer session is closed before the error propagates
+  - Remaining golfer sessions are not started after a BLOCKED event
 
-**Context.**
-All five feature areas are implemented. This task covers the final integration check, documentation updates, and removal of any remaining root-level scripts that have been superseded.
+### TASK-040: Verify course-locking within a date group
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-017
+- **Acceptance criteria:**
+  - Once any slot in a date group is booked, `lockedCourse` is set to the course that was used
+  - All subsequent attempts in that group skip the other course
+  - No booking for a given date spans both Pines and Oaks
 
-**Changes required:**
-- Run `npm run sync` and verify `golf-scheduler.log` contains correct `[SYNC]` entries.
-- Run `npm run status` and verify `actual_time` values are correctly populated for confirmed bookings.
-- Run `npm run web` and verify: (a) chips show `actual_time`, (b) modal shows "Confirmed Time" / "Target Time" labels, (c) header shows "Last synced" timestamp, (d) mobile view at 375px works correctly.
-- Start `npm run scheduler` and verify the first-run-immediately logic and 06:00 scheduling log.
-- Confirm `find-saturdays.js`, `update-saturdays.js`, and `sync-reservations.js` are absent from the project root (should have been removed in TASK-008).
-- Update `CLAUDE.md` to reflect: new `npm run sync` command wired to `src/sync.js`; `npm run scheduler` now runs daily at 06:00; `HEADLESS` and `SCHEDULER_HOUR` env vars.
+### TASK-041: Verify negative-offset guard in `_processGroup`
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-017
+- **Acceptance criteria:**
+  - If applying a negative time offset produces a `windowStart` before `00:00` (negative minutes), that attempt is skipped
+  - No exception is thrown; the attempt is silently omitted with a debug log
 
-**Acceptance Criteria:**
-- [ ] `npm run sync` completes without error and updates at least one booking record (or logs "nothing to update" if all data is current).
-- [ ] The web UI at `http://localhost:3002` renders correctly on Chrome desktop and Chrome mobile DevTools (375px iPhone SE preset).
-- [ ] The modal correctly labels "Confirmed Time" and "Target Time" for a booking that has `actual_time` set.
-- [ ] `CLAUDE.md` contains accurate descriptions of `src/sync.js`, the new scheduler behaviour, and the new env vars.
-- [ ] No root-level utility scripts remain that duplicate functionality now provided by `src/sync.js`.
+### TASK-042: Verify `INSERT OR IGNORE` duplicate-insert guard
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-004
+- **Acceptance criteria:**
+  - `ensureBookings()` uses `INSERT OR IGNORE` so repeated calls for the same `(date, target_time, slot_index)` tuple do not error or overwrite existing rows
+  - Confirmed bookings are never reset to `pending` by a subsequent `ensureBookings()` call
+
+### TASK-043: Verify max-retries filter
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-004
+- **Acceptance criteria:**
+  - `getPendingBookings()` excludes rows where `attempts >= config.maxRetries` (default 3)
+  - A slot that has failed 3 times is never returned to the booking engine
+
+### TASK-044: Verify incomplete golfer credentials filter
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-003
+- **Acceptance criteria:**
+  - `config.golfers` excludes any entry where `email` or `password` is falsy
+  - System operates correctly with 1, 2, or 3 complete golfer credential pairs
+  - If `GOLF_EMAIL2` is set but `GOLF_PASSWORD2` is not (or vice versa), that entry is silently excluded
+
+### TASK-045: Verify FR-012 — missing confirmed booking warning in sync
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-022
+- **Acceptance criteria:**
+  - After Phase 1 scrape, any confirmed booking with a real numeric confirmation whose date was in `step1VisibleDates` but has zero site reservations emits a `[SYNC] WARN` log
+  - Warning includes booking `id`, `date`, `slot_index`, and confirmation number
+  - Warning count is incremented in the `warnings` field of the return value
+
+### TASK-046: Verify `getAllUpcoming()` external-write detection
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-004
+- **Acceptance criteria:**
+  - `getAllUpcoming()` checks file `mtime` on each call
+  - When `mtime` has advanced since last load, reads a fresh copy from disk
+  - Race guard: if `mtime` advances again between the two `statSync` calls, module-level `db` is not replaced (but query still uses the fresh instance)
+  - Returns data from the fresh instance regardless of whether module-level `db` was replaced
+
+### TASK-047: Verify cancel date format normalisation
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-023
+- **Acceptance criteria:**
+  - `cancel <date>` accepts `YYYY-MM-DD`, `MM/DD`, `MM-DD` input formats
+  - Short formats normalise to `YYYY-MM-DD` using the current calendar year
+  - Invalid format produces a clear error message and `process.exit(1)`
 
 ---
 
-## Dependency Graph (summary)
+## Phase 10: Notifications Module
 
-```
-TASK-001 ──────────────────────────────────────────────────────→ TASK-013
-TASK-002 ──────────────────────────────────────────────────────→ TASK-006
-TASK-003 ──────────────────────────────────────────────────────→ TASK-007, TASK-018
-TASK-004 ──────────────────────────────────────────────────────→ TASK-005
+### TASK-048: Implement `src/notify.js` — booking outcome alerts
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-002
+- **Acceptance criteria:**
+  - Exports: `alertSuccess({ date, dayLabel, slots, course })`, `alertFailure({ date, dayLabel, error })`, `alertPartialBooking({ date, dayLabel, bookedSlots, totalSlots, screenshotPath })`, `alertBlocked({ screenshotPath, error })`
+  - All four functions log via `logger`
+  - `alertBlocked` and `alertPartialBooking` also write directly to `console.error` / `console.log` for high visibility in interactive runs
+  - `alertPartialBooking` includes contact info: `850-833-9664`, `jhill2@fwb.org`
 
-TASK-005 ──────────────────────────────────────────────────────→ TASK-007
-TASK-006 ──────────────────────────────────────────────────────→ TASK-007
+---
 
-TASK-007 ──────────────────────────────────────────────────────→ TASK-008, TASK-009
-TASK-008 ──────────────────────────────────────────────────────→ TASK-009, TASK-022
+## Phase 11: End-to-End Verification
 
-TASK-009 ──────────────────────────────────────────────────────→ TASK-010, TASK-012
-TASK-010 ──────────────────────────────────────────────────────→ TASK-011
-TASK-011 ──────────────────────────────────────────────────────→ TASK-022
+### TASK-049: Dry-run smoke test — full booking engine
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-016, TASK-023
+- **Acceptance criteria:**
+  - `npm run dry-run` completes without error
+  - Output lists all pending slots with golfer assignments and target times
+  - No browser launched, no DB mutations made
+  - Exit code 0
 
-TASK-013 ──────────────────────────────────────────────────────→ TASK-014, TASK-016, TASK-017, TASK-018
-TASK-014 ──────────────────────────────────────────────────────→ TASK-015, TASK-020, TASK-021
-TASK-015 ──────────────────────────────────────────────────────→ TASK-019, TASK-020
-TASK-018 ──────────────────────────────────────────────────────→ TASK-021
+### TASK-050: `npm run status` output verification
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** TASK-023, TASK-049
+- **Acceptance criteria:**
+  - Command prints aligned table of all upcoming bookings
+  - Summary line shows confirmed/pending/failed counts
+  - Handles empty DB gracefully with message "No upcoming bookings"
 
-TASK-019 → TASK-022 (via TASK-020 → TASK-022)
-TASK-020 → TASK-022
-TASK-021 → TASK-022
-```
+### TASK-051: `npm run web` end-to-end calendar verification
+- **Owner:** frontend-developer
+- **Effort:** S
+- **Blocked by:** TASK-029, TASK-031
+- **Acceptance criteria:**
+  - Server starts and `GET /` returns 200 with valid HTML
+  - `GET /api/bookings` returns `{ bookings: [], lastSyncAt: null }` on a fresh DB
+  - Calendar renders current and next month without JS errors in console
+  - "Last synced: Never" shown when no sync has run
+  - `GET /admin` returns 200 for localhost; returns 403 when `X-Forwarded-For` is set to an external IP
 
-## Critical Path
+### TASK-052: HTTPS server startup verification
+- **Owner:** deployment-engineer
+- **Effort:** S
+- **Blocked by:** TASK-025, TASK-035
+- **Acceptance criteria:**
+  - With `HTTPS_ENABLED=true` and valid cert/key in `data/certs/`, server starts on HTTPS without error
+  - With `HTTPS_ENABLED=false` or unset, plain HTTP server starts regardless of cert file presence
+  - Missing cert files with `HTTPS_ENABLED=true` produce a clear error message before process exit
 
-The longest dependency chain (critical path) runs through the sync engine and mobile UI streams:
+### TASK-053: Multi-golfer rotation integration verification
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-016, TASK-006
+- **Acceptance criteria:**
+  - With two or three complete golfer credential pairs in `.env`, `npm run dry-run` shows different golfer indices assigned to different booking dates
+  - All slots on the same date share the same golfer index
+  - Round-robin counter advances with each unique booking date in the horizon window
+  - When computed `golferIndex` exceeds `golfers.length - 1`, falls back to `golfers[0]`
 
-```
-TASK-002 → TASK-006 → TASK-007 → TASK-008 → TASK-009 → TASK-010 → TASK-011
-TASK-001 → TASK-013 → TASK-014 → TASK-015 → TASK-020 → TASK-022
-```
+### TASK-054: Sync engine integration verification
+- **Owner:** backend-architect
+- **Effort:** S
+- **Blocked by:** TASK-022, TASK-023
+- **Acceptance criteria:**
+  - `npm run sync` completes without unhandled exception
+  - `data/sync-meta.json` created/updated with current ISO timestamp after run
+  - Console output includes `checked`, `updated`, `warnings`, `errors` count fields
+  - All sync log lines carry the `[SYNC]` prefix
 
-Both chains converge at TASK-022. Total depth: **8 tasks**.
+---
+
+## Phase 12: Documentation and Maintenance
+
+### TASK-055: Document environment variables and setup in README
+- **Owner:** deployment-engineer
+- **Effort:** S
+- **Blocked by:** TASK-001
+- **Acceptance criteria:**
+  - README lists all 14 env vars with required/optional status, default value, and one-line description
+  - Setup steps: clone → `npm install` → `npx playwright install chromium` → copy `.env.example` to `.env` → fill credentials → `npm run init` → `npm run web`
+  - Scheduler daemon setup referenced (Docker compose or `setup-scheduler.ps1`)
+  - Platform note present: Windows primary; use Unix shell syntax in Git Bash
+
+### TASK-056: Document cert renewal process
+- **Owner:** deployment-engineer
+- **Effort:** XS
+- **Blocked by:** TASK-035
+- **Acceptance criteria:**
+  - README or inline `get-cert.js` comment explains the 90-day Let's Encrypt expiry
+  - Instructions to re-run `node get-cert.js` before day 60
+  - `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` requirements explained
+
+### TASK-057: Update agent memory with observed requirement patterns
+- **Owner:** backend-architect
+- **Effort:** XS
+- **Blocked by:** none
+- **Acceptance criteria:**
+  - `C:\Users\Bruce\source\repos\GolfScheduler\.claude\agent-memory\project-planner\MEMORY.md` updated with any new stable patterns or recurring ambiguities surfaced during this session
+  - No session-specific or unverified information recorded
+  - Existing entries corrected if contradicted by code review findings in this session

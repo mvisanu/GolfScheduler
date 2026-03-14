@@ -8,6 +8,9 @@ function generateAndPush() {
     execFile(process.execPath, [path.join(__dirname, '../generate-static.js')], (err, stdout, stderr) => {
       if (stdout) process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
+      if (err) {
+        console.warn(`[WARN] generate-static.js failed (exit ${err.code}): ${err.message}`);
+      }
       resolve();
     });
   });

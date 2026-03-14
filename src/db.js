@@ -4,56 +4,66 @@ const fs = require('fs');
 const config = require('./config');
 
 let db = null;
+let _dbInitPromise = null; // guards against concurrent initialization
 
 async function getDb() {
   if (db) return db;
 
-  const dbDir = path.dirname(config.dbPath);
-  if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+  // Serialize concurrent callers: if initialization is already in progress,
+  // wait for it rather than spawning a second SQL.js init that would
+  // overwrite `db` and discard in-flight mutations from the first caller.
+  if (_dbInitPromise) return _dbInitPromise;
 
-  const SQL = await initSqlJs();
+  _dbInitPromise = (async () => {
+    const dbDir = path.dirname(config.dbPath);
+    if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
 
-  if (fs.existsSync(config.dbPath)) {
-    const buffer = fs.readFileSync(config.dbPath);
-    db = new SQL.Database(buffer);
-  } else {
-    db = new SQL.Database();
-  }
+    const SQL = await initSqlJs();
 
-  db.run(`
-    CREATE TABLE IF NOT EXISTS bookings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
-      day_label TEXT NOT NULL,
-      target_time TEXT NOT NULL,
-      actual_time TEXT,
-      window_start TEXT,
-      window_end TEXT,
-      course TEXT NOT NULL,
-      slot_index INTEGER NOT NULL,
-      players INTEGER NOT NULL,
-      golfer_index INTEGER NOT NULL DEFAULT 0,
-      confirmation_number TEXT,
-      screenshot_path TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      last_attempt_at TEXT,
-      error_message TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(date, target_time, slot_index)
-    )
-  `);
+    if (fs.existsSync(config.dbPath)) {
+      const buffer = fs.readFileSync(config.dbPath);
+      db = new SQL.Database(buffer);
+    } else {
+      db = new SQL.Database();
+    }
 
-  // Add columns to existing databases
-  try { db.run(`ALTER TABLE bookings ADD COLUMN window_start TEXT`); } catch (e) { /* column exists */ }
-  try { db.run(`ALTER TABLE bookings ADD COLUMN window_end TEXT`); } catch (e) { /* column exists */ }
-  try { db.run(`ALTER TABLE bookings ADD COLUMN golfer_index INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* column exists */ }
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        day_label TEXT NOT NULL,
+        target_time TEXT NOT NULL,
+        actual_time TEXT,
+        window_start TEXT,
+        window_end TEXT,
+        course TEXT NOT NULL,
+        slot_index INTEGER NOT NULL,
+        players INTEGER NOT NULL,
+        golfer_index INTEGER NOT NULL DEFAULT 0,
+        confirmation_number TEXT,
+        screenshot_path TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(date, target_time, slot_index)
+      )
+    `);
 
-  db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)`);
+    // Add columns to existing databases
+    try { db.run(`ALTER TABLE bookings ADD COLUMN window_start TEXT`); } catch (e) { /* column exists */ }
+    try { db.run(`ALTER TABLE bookings ADD COLUMN window_end TEXT`); } catch (e) { /* column exists */ }
+    try { db.run(`ALTER TABLE bookings ADD COLUMN golfer_index INTEGER NOT NULL DEFAULT 0`); } catch (e) { /* column exists */ }
 
-  return db;
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(date)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status)`);
+
+    return db;
+  })();
+
+  return _dbInitPromise;
 }
 
 function save() {
