@@ -102,7 +102,7 @@ describe('A — scheduler.computeBookingSlots()', () => {
     }
   });
 
-  test('A04 Monday has 3 slots at 12:00/12:10/12:20', () => {
+  test('A04 Monday has 2 slots at 12:00/12:10', () => {
     const byDate = {};
     for (const s of computeBookingSlots()) {
       if (new Date(s.date + 'T12:00:00').getDay() !== 1) continue;
@@ -110,10 +110,9 @@ describe('A — scheduler.computeBookingSlots()', () => {
     }
     for (const [date, slots] of Object.entries(byDate)) {
       slots.sort((a, b) => a.slotIndex - b.slotIndex);
-      assert.equal(slots.length, 3, `Monday ${date} should have 3 slots`);
+      assert.equal(slots.length, 2, `Monday ${date} should have 2 slots`);
       assert.equal(slots[0].targetTime, '12:00', 'Slot 0 should be 12:00');
       assert.equal(slots[1].targetTime, '12:10', 'Slot 1 should be 12:10');
-      assert.equal(slots[2].targetTime, '12:20', 'Slot 2 should be 12:20');
     }
   });
 
@@ -833,9 +832,9 @@ describe('F — config / schedule', () => {
     assert.ok(days.has(6), 'Saturday missing');
   });
 
-  test('F02 Monday has 3 slots', () => {
+  test('F02 Monday has 2 slots', () => {
     const mon = config.schedule.find(s => s.day === 1);
-    assert.equal(mon.slots, 3);
+    assert.equal(mon.slots, 2);
   });
 
   test('F03 Tuesday has 2 slots', () => {
@@ -843,14 +842,14 @@ describe('F — config / schedule', () => {
     assert.equal(tue.slots, 2);
   });
 
-  test('F04 Friday has 3 slots', () => {
+  test('F04 Friday has 2 slots', () => {
     const fri = config.schedule.find(s => s.day === 5);
-    assert.equal(fri.slots, 3);
+    assert.equal(fri.slots, 2);
   });
 
-  test('F05 Saturday has 3 slots', () => {
+  test('F05 Saturday has 2 slots', () => {
     const sat = config.schedule.find(s => s.day === 6);
-    assert.equal(sat.slots, 3);
+    assert.equal(sat.slots, 2);
   });
 
   test('F06 Saturday window 08:00–13:00', () => {

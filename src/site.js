@@ -638,6 +638,14 @@ class SiteAutomation {
         logger.debug(`Card text: "${cardText.trim().slice(0, 120)}"`);
         const time = this._extractTime(cardText);
         if (time) {
+          // Check max player capacity from the card (e.g. "1 - 4" or "1 - 3").
+          // Only include tee times where 4 players is available.
+          const playerMatch = cardText.match(/\b(\d)\s*[-–]\s*(\d)\b/);
+          const maxPlayers = playerMatch ? parseInt(playerMatch[2], 10) : 4;
+          if (maxPlayers < 4) {
+            logger.info(`  Skipping ${time} — max players on this slot is ${maxPlayers} (need 4)`);
+            continue;
+          }
           teeTimes.push({
             time,
             text: cardText.trim(),

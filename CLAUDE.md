@@ -55,7 +55,7 @@ Each slot = 4 players. Consecutive tee times spaced ~10 min apart. Falls back to
 
 - **Target platform**: `https://fort-walton-member.book.teeitup.golf` (Next.js React SPA with MUI)
 - **Login**: Clicks "Login" button → finds GolfID iframe → fills email/password → submits → dismisses email verification prompt via `[aria-label="Close"]` → dismisses MUI backdrop
-- **Tee time discovery**: Finds all `button:has-text("Book Now")`, walks up parent DOM (max 3 levels, text < 300 chars) to extract time via regex
+- **Tee time discovery**: Finds all `button:has-text("Book Now")`, walks up parent DOM (max 3 levels, text < 300 chars) to extract time via regex. **Pre-filters by player capacity**: cards showing `1 - 3` (max players < 4) are skipped before the modal is opened — no wasted click.
 - **MUI overlay workaround**: `_dismissModals()` clicks backdrops, presses Escape; all clicks use `el.evaluate(el => el.click())` to bypass `MuiBackdrop-root` pointer interception
 - **Consecutive slot matching**: `findConsecutiveSlots()` searches ±fallbackMinutes (default 30) for N slots with 5-15 min gaps
 - **Course selection**: `selectCourse(courseName)` takes 'Pines' or 'Oaks' — dynamically selects the requested course via dropdown or filter buttons
@@ -100,6 +100,7 @@ SQLite via sql.js. Schema in `db.js`. Status values: `pending`, `confirmed`, `fa
 - **fix-confirmations.js** — Loops through all 3 golfer accounts, logs into each, visits their Reservations page, and updates the DB with real confirmation numbers for any confirmed booking still carrying a placeholder (`EXISTING_RESERVATION`, `access`, `CONFIRMED`). Limited by the ~7-day site window. Run with `node fix-confirmations.js`.
 - **delete-slot0.js** — One-time cleanup script that deletes all `slot_index = 0` rows from the database. Uses sql.js directly (no db.js dependency). Run with `node delete-slot0.js`.
 - **reset-failed.js** — Resets over-retried failed slots (`attempts > maxRetries`) back to `pending` (attempts=0) from `2026-03-16` onward. Also resets confirmed rows with `EXISTING_RESERVATION` placeholders. Run with `node reset-failed.js`.
+- **cancel-1player.js** — Logs into all configured golfer accounts, scrapes the reservation history, and cancels any reservation where the site shows only 1 player booked. Updates DB accordingly. Run with `HEADLESS=true node cancel-1player.js`.
 - **get-cert.js** — Obtains a trusted Let's Encrypt certificate via DuckDNS DNS-01 challenge. Requires `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` in `.env`. Saves cert to `data/certs/cert.pem` and `data/certs/key.pem`. Re-run every ~60 days to renew before 90-day expiry. Account key cached at `data/certs/account-key.pem`.
 
 Note: `sync-reservations.js`, `update-saturdays.js`, and `find-saturdays.js` have been removed from the project root. Their functionality is now provided by `npm run sync` (`src/sync.js`).
@@ -142,12 +143,15 @@ DUCKDNS_DOMAIN                 # DuckDNS subdomain (without .duckdns.org) — us
 - **Multi-batch split** (TASK-019, CLOSED): `_bookSlots()` now logs a batch-split breakdown when `slots.length > 3`. Because each slot completes its own checkout cycle, the ≤3-per-transaction constraint is already satisfied in practice. Explicit batch-ceiling enforcement is not needed until a schedule entry exceeds 3 slots.
 - **`verifyBookingOnSite` after checkout** (TASK-020, CLOSED): `_bookSlots()` now calls `verifyBookingOnSite(date, time)` after every successful checkout with a real numeric confirmation number. Slots that fail verification are marked `failed`; caching-delay or unreachable cases skip verification and keep `confirmed`.
 
-## Known bugs and low-severity findings (from TEST_REPORT.md 2026-03-10)
+## Known bugs and low-severity findings (from TEST_REPORT.md 2026-03-30)
 
-- **`_shiftTime()` midnight underflow** (RESOLVED): Fixed `src/booking.js` to use `((total % 1440) + 1440) % 1440` for correct wrapping. No production impact (no schedule entry near midnight).
-- **Cancel endpoint db-singleton race** (RESOLVED): `getAllUpcoming()` in `db.js` was replacing the module-level `db` singleton with a fresh disk snapshot, causing stale state in the cancel endpoint. Fixed by using a local `freshDb` without touching the singleton.
-- **Sunday slots spec delta** (P3): `schedule.json` has 3 slots/Sunday; `booking.md` specifies 4 slots. Intentional or undocumented — verify before changing.
+- **`_shiftTime()` midnight underflow** (RESOLVED): Fixed `src/booking.js` to use `((total % 1440) + 1440) % 1440` for correct wrapping.
+- **Cancel endpoint db-singleton race** (RESOLVED): `getAllUpcoming()` in `db.js` now uses a local `freshDb` without touching the singleton.
+- **`index.js` opens browser at port 3000** (RESOLVED): `index.js:42` now opens `http://localhost:3009`.
+- **`isLocalIP('172.')` too broad** (RESOLVED): `isLocalIP()` now correctly matches only RFC 1918 `172.16.0.0/12`.
+- **1-3 player tee time cards booked** (RESOLVED 2026-03-30): `getAvailableTimes()` in `site.js` now pre-filters cards by player capacity — skips any card where the displayed max players < 4, before the booking modal is opened. Belt-and-suspenders: the existing `preferenceOrder = [4]` modal guard is still in place.
+- **Test suite slot-count mismatch** (RESOLVED 2026-03-30): Tests A04/F02/F04/F05 updated to expect 2 slots (Mon/Fri/Sat) matching current `schedule.json`. All 102 tests pass.
+- **Test D09/D10 flakiness** (KNOWN): If a prior test process is killed before the `after()` hook closes the server, the zombie process holds port 3099. Subsequent runs send cancel requests to the stale server, which returns "Already cancelled" from its old DB. Fix: kill any process on port 3099 before running tests (`netstat -ano | grep 3099` then `taskkill /PID <pid> /F`).
+- **Sunday slots spec delta** (P3): `schedule.json` has 4 slots/Sunday (aligned with booking.md spec).
 - **`reconcileDate()` has zero test coverage** (P3): Pure logic in `src/reconcile.js` — high value target for unit tests.
-- **`index.js` opens browser at port 3000** (P3): Web server runs on 3009 (`index.js:39` opens wrong port).
 - **`generate-static.js` called silently** (P3): Invoked after every booking/sync/scheduler run; errors swallowed; not documented in specs.
-- **`isLocalIP('172.')` too broad** (P3): Matches more than RFC 1918 `172.16.0.0/12`; affects admin endpoint access control.

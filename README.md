@@ -12,7 +12,7 @@ Keeps the schedule filled for the next 30 days with configurable recurring booki
 - **Configurable schedule** via `schedule.json` — set day, time window, players, slots, and preferred course; use `"alternating"` to rotate Pines/Oaks each week
 - **Daily sync engine** — scrapes the FWB site reservation history and auto-corrects any mismatches (wrong times, confirmation numbers) in the database
 - **Existing reservation check** — pre-checks the site before booking to skip already-booked slots and prevent double-booking
-- **Strict 4-player enforcement** — skips any tee time that doesn't have 4 open spots rather than booking with fewer golfers
+- **Strict 4-player enforcement** — tee time cards showing fewer than 4 available spots (`1-3`) are filtered out before the booking modal is opened; a second check inside the modal confirms the 4-golfer button is enabled before adding to cart
 - **10-attempt course/time fallback** — 5 time offsets (0, ±1hr, ±2hr) on preferred course, then 5 on the other
 - **Two-pass slot strategy** — consecutive slots first, then individual fallback
 - **Calendar web view** at `http://localhost:3009` — shows confirmed bookings (slot_index ≥ 1); click any chip to see date, time, course, player count, **which golfer account booked it** (full email shown), and confirmation number
@@ -68,18 +68,26 @@ Edit `schedule.json` in the project root:
   {
     "day": "Monday",
     "windowStart": "12:00",
-    "windowEnd": "13:00",
-    "players": 12,
-    "slots": 3,
+    "windowEnd": "14:00",
+    "players": 8,
+    "slots": 2,
     "course": "Pines"
   },
   {
     "day": "Saturday",
     "windowStart": "08:00",
     "windowEnd": "13:00",
-    "players": 12,
-    "slots": 3,
+    "players": 8,
+    "slots": 2,
     "course": "Pines"
+  },
+  {
+    "day": "Sunday",
+    "windowStart": "08:00",
+    "windowEnd": "10:00",
+    "players": 16,
+    "slots": 4,
+    "course": "alternating"
   }
 ]
 ```
@@ -250,6 +258,7 @@ GolfScheduler/
 ├── schedule.json         # Configurable booking schedule
 ├── fix-confirmations.js  # Fetch real confirmation numbers for all 3 golfer accounts
 ├── reset-failed.js       # Reset over-retried failed slots back to pending
+├── cancel-1player.js     # Cancel any site reservations booked with only 1 player
 ├── delete-slot0.js       # One-time cleanup — remove slot_index=0 rows from DB
 ├── get-cert.js           # Let's Encrypt cert via DuckDNS DNS challenge
 ├── src/
@@ -325,7 +334,7 @@ GolfScheduler/
 | Playwright browser missing | Run `npx playwright install chromium` |
 | BLOCKED alert | Stop the bot, check the site manually, do not retry automatically |
 | Golfer login rejected | Verify `GOLF_EMAIL2`/`GOLF_PASSWORD2` credentials — account must be registered on teeitup.golf |
-| Only 1–3 spots available | Bot skips those tee times (strict 4-player enforcement); try another time or run `npm run book` again later |
+| Only 1–3 spots available | Card is skipped before the modal opens (strict 4-player enforcement); run `npm run book` again later when a 4-spot opens |
 | Sync finds nothing beyond 7 days | Site only shows upcoming reservations within ~7 days |
 | HTTPS cert warning | Self-signed cert — click Advanced → Proceed once per browser |
 | `get-cert.js` fails with SERVFAIL | DuckDNS nameservers are flaky — try again later |
