@@ -23,9 +23,9 @@ No build step, no linter. Raw Node.js.
 
 ## Core Modules
 
-**booking.js** — `BookingEngine` class. `new BookingEngine({ dryRun, site })`. When `site` is null (default), groups pending bookings by `golfer_index` and creates a separate `SiteAutomation` session per golfer account. Uses 10-attempt course/time fallback (preferred→other course, each with 5 time offsets `[0, -1hr, +1hr, -2hr, +2hr]`). `_shiftTime()` uses `((total % 1440) + 1440) % 1440` for correct midnight wrapping. After successful checkout with a real numeric confirmation, calls `verifyBookingOnSite(date, time)` — if booking not found on Reservations page it's marked `failed`; caching delays skip verification.
+**booking.js** — `BookingEngine` class. `new BookingEngine({ dryRun, site })`. When `site` is null (default), groups pending bookings by `golfer_index` and creates a separate `SiteAutomation` session per golfer account. Uses 10-attempt course/time fallback (preferred→other course, each with 5 time offsets `[0, -1hr, +1hr, -2hr, +2hr]`). `_shiftTime()` uses `((total % 1440) + 1440) % 1440` for correct midnight wrapping. After successful checkout with a real numeric confirmation, calls `verifyBookingOnSite(date, time)` — if booking not found on Reservations page it's marked `failed`; caching delays skip verification. **Tee time caching:** `_processGroup()` fetches `getAvailableTeeTimes()` once per course per date and passes the cached array to `_tryCourse()`; all 5 time-offset attempts for the same course filter in memory without re-navigating (eliminates up to 8 redundant page loads per date group).
 
-**site.js** — `SiteAutomation` class. Playwright (Chromium) automation against `https://fort-walton-member.book.teeitup.golf` (Next.js/MUI SPA). **Golfer count: tries 4 only** (`preferenceOrder = [4]`) — skips the tee time entirely if 4-player option is unavailable; never books fewer than 4. Pre-filters tee time cards by player capacity (skips cards where max < 4) before opening modal. Uses `el.evaluate(el => el.click())` to bypass MUI backdrop overlays. `selectCourse(courseName)` accepts `'Pines'` or `'Oaks'`. Headless mode via `HEADLESS` env var.
+**site.js** — `SiteAutomation` class. Playwright (Chromium) automation against `https://fort-walton-member.book.teeitup.golf` (Next.js/MUI SPA). **Golfer count: tries 4 only** (`preferenceOrder = [4]`) — skips the tee time entirely if 4-player option is unavailable; never books fewer than 4. Pre-filters tee time cards by player capacity (skips cards where max < 4) before opening modal. Uses `el.evaluate(el => el.click())` to bypass MUI backdrop overlays. `selectCourse(courseName)` accepts `'Pines'` or `'Oaks'`. Headless mode via `HEADLESS` env var. Screenshot dir existence is checked once per process (module-level flag) rather than on every `screenshot()` call.
 
 **scheduler.js** — Pure computation. `computeBookingSlots()` generates slots for next N days from config schedule. `"alternating"` course sentinel resolved via `resolveAlternatingCourse(dateStr)` (ISO week parity: even=Pines, odd=Oaks). Assigns `golferIndex` per date using round-robin (`dateCounter % numGolfers`). Consecutive slots spaced 10 min apart.
 
@@ -45,11 +45,11 @@ No build step, no linter. Raw Node.js.
 
 | Day      | Window       | Players | Slots | Course      |
 |----------|-------------|---------|-------|-------------|
-| Monday   | 12:00-13:00 | 12      | 3     | Pines       |
-| Tuesday  | 12:00-13:00 | 8       | 2     | Pines       |
-| Friday   | 12:00-13:00 | 12      | 3     | Pines       |
-| Saturday | 08:00-13:00 | 12      | 3     | Pines       |
-| Sunday   | 08:00-10:00 | 12      | 3     | alternating |
+| Monday   | 12:00-14:00 | 8       | 2     | Pines       |
+| Tuesday  | 12:00-14:00 | 8       | 2     | Pines       |
+| Friday   | 12:00-14:00 | 8       | 2     | Pines       |
+| Saturday | 08:00-13:00 | 8       | 2     | Pines       |
+| Sunday   | 08:00-10:00 | 16      | 4     | alternating |
 
 Each slot = 4 players. Tee times spaced ~10 min apart. Falls back to other course and ±1hr/±2hr windows if preferred unavailable. Sunday alternates Pines (even ISO week) / Oaks (odd ISO week).
 
