@@ -189,6 +189,12 @@ class BookingEngine {
     const cumulative = { booked: 0, failed: 0, partial: 0 };
     let lockedCourse = null; // Once a slot is booked, lock to that course
 
+    // Cache of tee time strings (NOT element refs) keyed by course name.
+    // Fetched once per course — element refs go stale after navigation so we
+    // only cache the time strings for in-memory window filtering.  _bookSlots
+    // always re-navigates and re-fetches fresh element refs before clicking.
+    const teeTimeCache = new Map(); // courseName → string[]
+
     for (const [i, attempt] of attempts.entries()) {
       if (slots.length === 0) break;
 
@@ -200,7 +206,21 @@ class BookingEngine {
       const label = `${attempt.course} ${attempt.start}-${attempt.end}${offsetLabel}`;
       logger.info(`Attempt ${i + 1}/${attempts.length}: ${label} (${slots.length} slots needed)`);
 
-      const result = await this._tryCourse(slots, date, dayLabel, attempt.course, attempt.start, attempt.end);
+      // Fetch tee times for this course once, reuse for all 5 time-offset attempts.
+      if (!teeTimeCache.has(attempt.course)) {
+        const courseId = attempt.course === 'Oaks' ? config.site.courses.oaks.id : config.site.courses.pines.id;
+        await this.site.navigateToBooking(courseId, date);
+        await this.site.selectCourse(attempt.course);
+        await this.site.selectDate(date);
+        const fetched = await this.site.getAvailableTeeTimes();
+        // Strip element refs — they go stale after the next navigation.
+        // Only the time strings are needed for window filtering here.
+        teeTimeCache.set(attempt.course, fetched.map(t => ({ time: t.time })));
+        logger.info(`Fetched ${fetched.length} tee time(s) for ${attempt.course} on ${date} (cached)`);
+      }
+
+      const cachedTimes = teeTimeCache.get(attempt.course);
+      const result = await this._tryCourse(slots, date, dayLabel, attempt.course, attempt.start, attempt.end, cachedTimes);
 
       if (result.booked > 0) {
         lockedCourse = attempt.course; // Lock to this course for remaining slots
@@ -240,30 +260,33 @@ class BookingEngine {
    * Try to book slots on a single course within a specific time window.
    * First tries consecutive slots, then falls back to individual slots.
    * Returns { booked, failed, slotsFound, _bookedSlotIds }
+   *
+   * @param {object[]} slots        - DB slot records to fill.
+   * @param {string}   date         - ISO date string.
+   * @param {string}   dayLabel     - Human-readable day label.
+   * @param {string}   courseName   - 'Pines' or 'Oaks'.
+   * @param {string}   windowStart  - HH:MM window start.
+   * @param {string}   windowEnd    - HH:MM window end.
+   * @param {object[]} cachedTimes  - Pre-fetched tee times ({ time } objects, no stale element refs).
+   *                                  Provided by _processGroup which fetches once per course/date.
    */
-  async _tryCourse(slots, date, dayLabel, courseName, windowStart, windowEnd) {
-    const courseId = courseName === 'Oaks' ? config.site.courses.oaks.id : config.site.courses.pines.id;
+  async _tryCourse(slots, date, dayLabel, courseName, windowStart, windowEnd, cachedTimes) {
     const slotsNeeded = slots.length;
 
-    await this.site.navigateToBooking(courseId, date);
-    await this.site.selectCourse(courseName);
-    await this.site.selectDate(date);
-
-    const teeTimes = await this.site.getAvailableTeeTimes();
-    if (teeTimes.length === 0) {
+    if (!cachedTimes || cachedTimes.length === 0) {
       logger.warn(`No tee times on ${courseName} for ${date}`);
       return { booked: 0, failed: 0, slotsFound: false, _bookedSlotIds: new Set() };
     }
 
     // Try consecutive slots first (ideal for group play)
-    const consecutive = this.site.findConsecutiveSlots(teeTimes, windowStart, windowEnd, slotsNeeded);
+    const consecutive = this.site.findConsecutiveSlots(cachedTimes, windowStart, windowEnd, slotsNeeded);
     if (consecutive.length > 0) {
       const result = await this._bookSlots(consecutive, slots, date, dayLabel, courseName);
       return { ...result, slotsFound: true };
     }
 
     // Fall back to individual slots in the window
-    const available = this.site.findSlotsInWindow(teeTimes, windowStart, windowEnd, slotsNeeded);
+    const available = this.site.findSlotsInWindow(cachedTimes, windowStart, windowEnd, slotsNeeded);
     if (available.length === 0) {
       logger.warn(`No slots in ${windowStart}-${windowEnd} on ${courseName}`);
       return { booked: 0, failed: 0, slotsFound: false, _bookedSlotIds: new Set() };
@@ -297,16 +320,27 @@ class BookingEngine {
       });
 
       if (match) {
-        logger.info(`Slot ${slot.slot_index} (${slot.target_time}) already covered by existing reservation at ${match.time} (${match.course}) — marking confirmed`);
-        await db.markSuccess(slot.id, {
-          actualTime: match.time,
-          course: match.course,
-          confirmationNumber: 'EXISTING_RESERVATION',
-          screenshotPath: null,
-        });
-        // Remove the matched reservation so it doesn't match multiple slots
-        const idx = existingReservations.indexOf(match);
-        existingReservations.splice(idx, 1);
+        // Guard: if the site shows fewer than 4 players on this reservation,
+        // do NOT mark it confirmed — the slot must still be booked properly.
+        const matchPlayers = typeof match.players === 'number' ? match.players : 4;
+        if (matchPlayers < 4) {
+          logger.warn(
+            `Slot ${slot.slot_index} (${slot.target_time}): found existing reservation at ${match.time} (${match.course}) ` +
+            `but it only has ${matchPlayers} player(s) — not marking confirmed, slot remains pending for rebooking`
+          );
+          remaining.push(slot);
+        } else {
+          logger.info(`Slot ${slot.slot_index} (${slot.target_time}) already covered by existing reservation at ${match.time} (${match.course}) — marking confirmed`);
+          await db.markSuccess(slot.id, {
+            actualTime: match.time,
+            course: match.course,
+            confirmationNumber: 'EXISTING_RESERVATION',
+            screenshotPath: null,
+          });
+          // Remove the matched reservation so it doesn't match multiple slots
+          const idx = existingReservations.indexOf(match);
+          existingReservations.splice(idx, 1);
+        }
       } else {
         remaining.push(slot);
       }
@@ -369,12 +403,12 @@ class BookingEngine {
 
       logger.info(`Booking slot ${i}: ${targetTime} for ${dbSlot.players} players`);
 
-      // Re-scan tee times to get fresh element references
-      if (i > 0) {
-        await this.site.navigateToBooking(courseId, date);
-        await this.site.selectCourse(courseName);
-        await this.site.selectDate(date);
-      }
+      // Re-navigate to get fresh element references.
+      // _tryCourse no longer pre-navigates (it works from cached time strings),
+      // so _bookSlots is responsible for navigation on every slot including the first.
+      await this.site.navigateToBooking(courseId, date);
+      await this.site.selectCourse(courseName);
+      await this.site.selectDate(date);
 
       const teeTimes = await this.site.getAvailableTeeTimes();
       const match = teeTimes.find(t => t.time === targetTime);
@@ -457,7 +491,10 @@ class BookingEngine {
         result.failed++;
       }
 
-      await new Promise(r => setTimeout(r, 2000));
+      // Brief pause between slots — not needed after the last one
+      if (i < timesToBook.length - 1) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
 
     // If fewer-than-4-player slots were booked, add compensating pending slots

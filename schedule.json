@@ -3,8 +3,8 @@
     "day": "Monday",
     "windowStart": "12:00",
     "windowEnd": "14:00",
-    "players": 12,
-    "slots": 3,
+    "players": 8,
+    "slots": 2,
     "course": "Pines"
   },
   {
@@ -19,16 +19,16 @@
     "day": "Friday",
     "windowStart": "12:00",
     "windowEnd": "14:00",
-    "players": 12,
-    "slots": 3,
+    "players": 8,
+    "slots": 2,
     "course": "Pines"
   },
   {
     "day": "Saturday",
     "windowStart": "08:00",
     "windowEnd": "13:00",
-    "players": 12,
-    "slots": 3,
+    "players": 8,
+    "slots": 2,
     "course": "Pines"
   },
   {

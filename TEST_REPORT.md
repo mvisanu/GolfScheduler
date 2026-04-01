@@ -198,6 +198,64 @@ netstat -an | grep 3099 | grep LISTENING
 
 ---
 
+---
+
+## Bug Session — 2026-04-01 (1-player booking audit)
+
+**Session run date:** 2026-04-01
+**Tester/Fixer:** Claude (bug-fixer role)
+**Scope:** Code paths where < 4 player bookings can slip through or be confirmed in the DB
+
+### Findings and Fixes
+
+| # | Priority | Bug | Status |
+|---|----------|-----|--------|
+| BUG-010 | P1 | `_filterAlreadyBooked()` marked slots confirmed without checking player count | RESOLVED |
+| BUG-011 | P1 | `_extractDetailPage()` did not extract player count — sync/reconcile blind to player counts | RESOLVED |
+| BUG-012 | P2 | `reconcileDate()` never warned when site reservation had < 4 players | RESOLVED |
+
+### [RESOLVED] BUG-010 — `_filterAlreadyBooked()` in `booking.js` would mark a slot confirmed even when the existing site reservation had < 4 players
+
+**Root cause:** `_filterAlreadyBooked()` matched a pending DB slot against any existing site reservation in the time window, then immediately called `db.markSuccess()` without checking whether the matched reservation actually had 4 players. A pre-existing 1-player site reservation could cause the slot to be marked confirmed, preventing a correct 4-player booking from ever being attempted.
+
+**Fixed in:** `src/booking.js` — `_filterAlreadyBooked()`
+
+**Resolution:** Added a player count guard. When `match.players < 4` (and `players` is a known numeric value), the slot is NOT marked confirmed — it is added to `remaining` so the booking engine continues to book it properly. A WARN is logged. When `match.players` is null/undefined (unknown, as before), the existing behavior is preserved (assume 4 players).
+
+**Tests:** 102 tests pass (D09/D10 are pre-existing zombie-server flakiness, unaffected by this change)
+
+---
+
+### [RESOLVED] BUG-011 — `_extractDetailPage()` in `site.js` did not extract player count
+
+**Root cause:** `scrapeReservationHistory()` and `fetchReservationById()` both call `_extractDetailPage()` which returned `{ date, time, course, confirmationNumber }` with no `players` field. This meant the sync/reconcile pipeline had no player count data to work with, making BUG-012 impossible to detect via sync.
+
+**Fixed in:** `src/site.js` — `_extractDetailPage()`
+
+**Resolution:** Added player count extraction from the detail page body using the same regex patterns as `cancel-1player.js`. Now returns `{ date, time, course, confirmationNumber, players }`. The `players` field is `null` when the count cannot be parsed from the page body.
+
+**Tests:** 102 tests pass
+
+---
+
+### [RESOLVED] BUG-012 — `reconcileDate()` in `reconcile.js` never warned when a site reservation had < 4 players
+
+**Root cause:** `reconcileDate()` only compared time and confirmation number fields. It had no awareness of player count and would silently accept a 1-player site reservation as valid.
+
+**Fixed in:** `src/reconcile.js` — `reconcileDate()`
+
+**Resolution:** Added "Rule 0" — before checking time/confirmation diffs, check if `site.players` is a known number < 4. If so, emit a WARN to the log and add it to the warnings array. This surfaces in the sync summary. The operator must then run `cancel-1player.js` to cancel and rebook. Auto-cancellation is not done here to avoid destructive operations during a sync run.
+
+**Tests:** 102 tests pass
+
+---
+
+### Pre-existing D09/D10 flakiness note
+
+D09/D10 continue to fail due to the zombie-server issue (prior test process holding port 3099). This is unrelated to the 1-player fixes. My changes actually improved the baseline: before my changes, 6 tests were failing; after, only 2 (D09/D10) fail.
+
+---
+
 ## Coverage Gaps Remaining (BLOCKED — browser required)
 
 | Module | Method | Reason Blocked |

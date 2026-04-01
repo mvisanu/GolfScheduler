@@ -1,157 +1,114 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Commands
 
 ```bash
-npm run book          # Run booking engine once (default command)
+npm run book          # Run booking engine once
 npm run dry-run       # Show what would be booked without booking
 npm run status        # Print table of all upcoming bookings
 npm run init          # Populate DB with computed slots (no booking)
-npm run sync          # Sync DB with FWB site reservation history (src/sync.js)
-npm run scheduler     # Run daily at 06:00: sync then book (setTimeout-based, not interval)
+npm run sync          # Sync DB with FWB site reservation history
+npm run scheduler     # Run daily at 06:00: sync then book
 npm run web           # Start calendar web view at http://localhost:3009
 npm run cancel -- <date>  # Cancel all reservations for a date (YYYY-MM-DD, MM/DD, MM-DD)
 ```
 
-No build step, no linter. Raw Node.js execution.
-
-**Tests:** `node --test tests/test.js` — 102 tests (Node.js built-in runner). Sections: A=scheduler, B=BookingEngine pure methods, C=db, D=web API, E=HTML/CSS, F=config, G=edge cases/security.
+No build step, no linter. Raw Node.js.  
+**Tests:** `node --test tests/test.js` — 102 tests (sections A–G).
 
 ## Architecture
 
-**Orchestration flow:** `index.js` (Commander CLI) → `BookingEngine` (booking.js) → `SiteAutomation` (site.js) + `db.js` + `scheduler.js`
-
+**Booking flow:** `index.js` (Commander CLI) → `BookingEngine` (booking.js) → `SiteAutomation` (site.js) + `db.js` + `scheduler.js`  
 **Sync flow:** `index.js sync` → `runSync()` (sync.js) → `SiteAutomation.scrapeReservationHistory()` + `fetchReservationById()` → `reconcileDate()` (reconcile.js) → `db.updateBookingSync()`
 
-### Core modules
+## Core Modules
 
-- **booking.js** — `BookingEngine` class. Constructor: `new BookingEngine({ dryRun = false, site = null })`. When `site` is provided (shared-site/legacy mode for sync), the engine reuses that session for all groups. When `site` is null (default), the engine groups pending bookings by `golfer_index` and creates a separate `SiteAutomation({ email, password })` session per golfer account — each session does `init()` / `login()` / process dates / `close()`. Orchestrates a full booking run: computes slots, ensures DB entries, groups pending bookings by date/time, then iterates each group through site automation. Pre-checks existing reservations to skip already-booked slots. Uses 10-attempt course/time fallback (preferred→other, each with 5 time offsets). Handles BLOCKED error short-circuiting. `_shiftTime()` uses `((total % 1440) + 1440) % 1440` so negative time offsets wrap correctly and never produce an invalid time string. `_bookSlots()` passes `courseName` to `selectCourse()` on re-navigation (bug fix). When `slots.length > 3`, logs a batch-split breakdown (individual checkouts per slot already satisfy the ≤3 per-transaction constraint). After a successful checkout with a real numeric confirmation number, calls `verifyBookingOnSite(date, time)`: if the Reservations page loads and does not contain the booking the slot is marked `failed`; if the page returns no entries (caching delay) or is unreachable verification is skipped and the slot remains `confirmed`.
-- **site.js** — `SiteAutomation` class. Constructor accepts `{ email, password }` — defaults to `config.email`/`config.password` if not provided, allowing per-golfer sessions. Playwright (Chromium) browser automation against the TeeItUp/Kenna Golf platform. Handles login (GolfID OAuth iframe), course/date selection (`selectCourse(courseName)` accepts 'Pines' or 'Oaks'), tee time discovery via "Book Now" buttons, **golfer count selection: tries 4 only** (`preferenceOrder = [4]`); skips the tee time entirely if the 4-player option is disabled or absent — never books fewer than 4 players, add-to-cart, checkout, cart cleanup, reservation checking (`getExistingReservations(date)`), and post-checkout verification (`verifyBookingOnSite(date, time)`). Uses JavaScript `el.click()` (not Playwright `.click()`) to bypass MUI backdrop overlays. Dismisses modals/popovers before interactions. Also provides `scrapeReservationHistory()` and `fetchReservationById(id)` for the sync engine. Headless mode controlled by `HEADLESS` env var.
-- **scheduler.js** — Pure computation. `computeBookingSlots()` generates all needed tee time slots for the next N days based on the recurring schedule in config. When a schedule entry has `course: "alternating"`, it calls `resolveAlternatingCourse(dateStr)` to assign a concrete `'Pines'` or `'Oaks'` value per-date before inserting into the DB. Assigns `golferIndex` per unique booking date using a round-robin counter (`dateCounter % numGolfers`) so all slots on the same date share one golfer account. `groupByDateAndTime()` groups pending DB rows for batch processing. Each consecutive slot is offset by 10 minutes (e.g., 12:00, 12:10, 12:20).
-- **db.js** — sql.js (pure-JS SQLite, no native build). Async API. Auto-persists to `./data/bookings.db` after mutations. Single `bookings` table with `UNIQUE(date, target_time, slot_index)` to prevent double-booking; includes `golfer_index INTEGER NOT NULL DEFAULT 0` column (added via `ALTER TABLE` with try/catch for backward compat). Key methods: `ensureBookings`, `getPendingBookings`, `markSuccess`, `markFailed`, `markCancelled`, `getBookingById`, `getAllUpcoming`, `updateBookingSync`, `getLastSyncAt`, `setLastSyncAt`, `cleanupStaleSlots`. `getAllUpcoming()` always reads a fresh snapshot from disk into a local `freshDb` instance — it does NOT replace the module-level `db` singleton (replacing it after an `await` would silently discard in-flight mutations from other methods). `cleanupStaleSlots()` deletes `skipped` rows whose `day_label` no longer matches any current schedule entry; used after schedule changes to prevent stale rows polluting the status view.
-- **sync.js** — `runSync(siteInstance?)` orchestrator. Accepts an optional already-authenticated `SiteAutomation` instance for session sharing; creates its own session when called standalone. Step 1: scrapes visible reservation history. Step 2: probes by ID for dates still carrying placeholder confirmation numbers. Applies `reconcileDate()` per date. Writes `lastSyncAt` to `./data/sync-meta.json` via `db.setLastSyncAt()`. Returns `{ checked, updated, warnings, errors }`. All log lines prefixed `[SYNC]`.
-- **reconcile.js** — `reconcileDate(date, siteSlots, dbSlots, logger)` exported function. Pairs site reservations to DB booking rows positionally (sorted by time / slot_index). Calls `db.updateBookingSync()` for each mismatched pair. Returns `{ updated, notFound, warnings }`. All log lines prefixed `[SYNC]`.
-- **config.js** — Loads `.env`. Defines recurring schedule (Mon/Tue/Fri/Sat/Sun), site URLs, course IDs (Pines=9437, Oaks=9438), credentials, tuning params, `schedulerHour` (default 6), and other settings. Exports `resolveAlternatingCourse(dateStr)` which converts the sentinel `"alternating"` course value to `'Pines'` (even ISO week) or `'Oaks'` (odd ISO week) using ISO 8601 week number parity. Exports `golfers` array built from `GOLF_EMAIL`/`GOLF_PASSWORD`, `GOLF_EMAIL2`/`GOLF_PASSWORD2`, `GOLF_EMAIL3`/`GOLF_PASSWORD3` — filtered to only entries where both email and password are present.
-- **web.js** — Express server on port 3009. `GET /` serves server-rendered HTML calendar (current + next month) showing only `status === 'confirmed'` bookings as green chips. Clicking a chip opens a detail modal showing date, day, confirmed time, target time, course, **players**, **booked-by golfer** (`Golfer N (email)`), status, and confirmation number (only real numeric IDs shown — placeholders like `access`/`EXISTING_RESERVATION` display as `—`). Embeds `GOLFERS` JSON array in the page script for client-side golfer label lookup. **Redesigned with shadcn/ui-inspired design system**: full CSS custom properties (`--background`, `--card`, `--primary`, `--border`, `--radius`, `--shadow-sm/md/xl`, semantic status vars), pill badges with two-tone color scheme, frosted-glass modal backdrop (`backdrop-filter: blur(2px)`), card-wrapped tables. Inter + Manrope fonts, WCAG AA contrast, mobile-responsive layout (< 640px collapses to `.mobile-booking-list` card view), floating zoom widget (hidden on mobile), and "Last synced" timestamp in header. `GET /api/bookings` returns `{ bookings, lastSyncAt }` JSON. Client-side auto-refresh polls `GET /api/bookings` every 60s via `refreshChips()` (paused while a modal is open). `POST /api/book-month` spawns the booking engine as a detached background process. `POST /api/cancel/:id` validates that the ID is a positive integer (`Number.isInteger(id) && id > 0`), cancels the booking (marks DB + optionally cancels on site). Calendar headings have "Schedule Month" (current month) and "Book Now" (next month) buttons. Admin controls (Schedule Month, Book Now, Cancel) are only rendered in HTML when the request comes from a local IP (`isLocalIP()`). All Bookings table columns: Date | Day | Target | Actual | Slot | Plyrs | Course | Status | Confirm# | By | Action (no Attempts column). `GET /admin` (localhost only, 403 for external IPs) renders a full access log dashboard with stats grid cards and a table of all visits (time, IP, country+flag, ISP, device, browser, OS, path, user-agent). Access log is persisted to `./data/access-log.json` (loaded on startup, saved after each new entry and after geo enrichment). HTTPS is controlled by `HTTPS_ENABLED=true` env var — when set, loads `data/certs/cert.pem` and `data/certs/key.pem` and creates an `https.Server`; otherwise plain HTTP. `startServer()` returns a Promise that resolves with the server instance (or rejects on bind error) — both HTTP and HTTPS paths use `.on('error', reject)` for proper error propagation.
-- **notify.js** — Console/log-based alerts for booking outcomes (success, failure, partial, blocked).
+**booking.js** — `BookingEngine` class. `new BookingEngine({ dryRun, site })`. When `site` is null (default), groups pending bookings by `golfer_index` and creates a separate `SiteAutomation` session per golfer account. Uses 10-attempt course/time fallback (preferred→other course, each with 5 time offsets `[0, -1hr, +1hr, -2hr, +2hr]`). `_shiftTime()` uses `((total % 1440) + 1440) % 1440` for correct midnight wrapping. After successful checkout with a real numeric confirmation, calls `verifyBookingOnSite(date, time)` — if booking not found on Reservations page it's marked `failed`; caching delays skip verification.
 
-### Booking schedule (defined in schedule.json, loaded by config.js)
+**site.js** — `SiteAutomation` class. Playwright (Chromium) automation against `https://fort-walton-member.book.teeitup.golf` (Next.js/MUI SPA). **Golfer count: tries 4 only** (`preferenceOrder = [4]`) — skips the tee time entirely if 4-player option is unavailable; never books fewer than 4. Pre-filters tee time cards by player capacity (skips cards where max < 4) before opening modal. Uses `el.evaluate(el => el.click())` to bypass MUI backdrop overlays. `selectCourse(courseName)` accepts `'Pines'` or `'Oaks'`. Headless mode via `HEADLESS` env var.
 
-| Day       | Window       | Players | Slots | Preferred Course |
-|-----------|-------------|---------|-------|-----------------|
-| Monday    | 12:00-13:00 | 12      | 3     | Pines            |
-| Tuesday   | 12:00-13:00 | 8       | 2     | Pines            |
-| Friday    | 12:00-13:00 | 12      | 3     | Pines            |
-| Saturday  | 08:00-13:00 | 12      | 3     | Pines            |
-| Sunday    | 08:00-10:00 | 12      | 3     | alternating      |
+**scheduler.js** — Pure computation. `computeBookingSlots()` generates slots for next N days from config schedule. `"alternating"` course sentinel resolved via `resolveAlternatingCourse(dateStr)` (ISO week parity: even=Pines, odd=Oaks). Assigns `golferIndex` per date using round-robin (`dateCounter % numGolfers`). Consecutive slots spaced 10 min apart.
 
-Each slot = 4 players. Consecutive tee times spaced ~10 min apart. Falls back to other course and ±1hr/±2hr windows if preferred is unavailable.
+**db.js** — sql.js (pure-JS SQLite). Auto-persists to `./data/bookings.db`. Table `bookings` with `UNIQUE(date, target_time, slot_index)`. Status values: `pending`, `confirmed`, `failed`, `partial`, `skipped`, `cancelled`. `getAllUpcoming()` reads from a local `freshDb` instance — does NOT replace the module-level singleton. `cleanupStaleSlots()` removes stale `skipped` rows after schedule changes.
 
-**Alternating Sunday course**: the `"alternating"` sentinel in `schedule.json` is resolved at slot-computation time using ISO 8601 week number parity — even week → Pines, odd week → Oaks. Week 10=Pines, 11=Oaks, 12=Pines, etc.
+**sync.js** — `runSync(siteInstance?)`. Scrapes reservation history, probes by ID for placeholder confirmation numbers, applies `reconcileDate()` per date. Writes `lastSyncAt` to `./data/sync-meta.json`.
 
-### Key site automation details (site.js)
+**config.js** — Loads `.env`, defines schedule (Mon/Tue/Fri/Sat/Sun), course IDs (Pines=9437, Oaks=9438). `golfers` array built from up to 3 `GOLF_EMAIL`/`GOLF_PASSWORD` pairs. Exports `resolveAlternatingCourse()`.
 
-- **Target platform**: `https://fort-walton-member.book.teeitup.golf` (Next.js React SPA with MUI)
-- **Login**: Clicks "Login" button → finds GolfID iframe → fills email/password → submits → dismisses email verification prompt via `[aria-label="Close"]` → dismisses MUI backdrop
-- **Tee time discovery**: Finds all `button:has-text("Book Now")`, walks up parent DOM (max 3 levels, text < 300 chars) to extract time via regex. **Pre-filters by player capacity**: cards showing `1 - 3` (max players < 4) are skipped before the modal is opened — no wasted click.
-- **MUI overlay workaround**: `_dismissModals()` clicks backdrops, presses Escape; all clicks use `el.evaluate(el => el.click())` to bypass `MuiBackdrop-root` pointer interception
-- **Consecutive slot matching**: `findConsecutiveSlots()` searches ±fallbackMinutes (default 30) for N slots with 5-15 min gaps
-- **Course selection**: `selectCourse(courseName)` takes 'Pines' or 'Oaks' — dynamically selects the requested course via dropdown or filter buttons
-- **Pre-booking reservation check**: `getExistingReservations(date)` navigates to `/reservation/history`, paginates through NEXT buttons (up to 20 pages), clicks VIEW DETAILS one card at a time (SPA navigation — URL may not change), extracts via full-body text scan (handles detail page layout), then goes back to list. Confirmation number regex matches both `Reservation #NUMBER` and `Confirmation #Name|NUMBER` formats. Site limitation: only shows reservations within ~7 days in the Upcoming section.
-- **Reservation history scraping**: `scrapeReservationHistory()` returns all visible upcoming reservations as `Array<{ date, time, course, confirmationNumber }>`. `fetchReservationById(id)` navigates directly to a reservation by numeric ID. Both methods require an active session (call after `init()` + `login()`).
-- **10-attempt course/time fallback** (in booking.js `_processGroup`): tries offsets `[0, -1hr, +1hr, -2hr, +2hr]` on preferred course first, then all 5 on the other course (10 total). Each attempt tries consecutive slots first, then individual. Once any slot is booked, the engine locks to that course for the remaining slots.
-- **Booking flow**: Book Now → select 4 golfers → ADD TO CART → complete checkout → verify on Reservations page
-- **Post-checkout verification**: `verifyBookingOnSite(date, time)` checks the Reservations page after each checkout. If the booking is not found, it's marked failed instead of confirmed.
-- **Cart cleanup**: `clearCart()` removes stale cart items after login to avoid "cart limit" errors
-- Use `waitUntil: 'domcontentloaded'` (not `networkidle`) — the SPA keeps long-polling connections
+**web.js** — Express on port 3009. Calendar view (current + next month) showing `confirmed` bookings. Detail modal shows date, time, course, players, golfer, status, confirmation number. Admin controls (Schedule Month, Book Now, Cancel) rendered only for local IPs. `GET /api/bookings` returns JSON; client polls every 60s. `POST /api/book-month` spawns booking engine as background process. `POST /api/cancel/:id` validates positive integer ID. `GET /admin` (localhost only) shows access log dashboard. HTTPS via `HTTPS_ENABLED=true` + `data/certs/`.
 
-### Daily scheduler (`npm run scheduler`)
+**reconcile.js** — `reconcileDate(date, siteSlots, dbSlots, logger)`. Pairs site reservations to DB rows positionally. Calls `db.updateBookingSync()` per mismatch.
 
-The `scheduler` command uses a pure `setTimeout` loop (not `setInterval`) that always fires at `SCHEDULER_HOUR:00` local time (default 06:00). On each fire:
+**notify.js** — Console/log alerts for booking outcomes.
 
-1. A dedicated `SiteAutomation` session is created, logged in as the primary golfer, and used for sync.
-2. `runSync(site)` is called first (syncs DB with site reservation history); session closed in `finally`.
-3. `new BookingEngine()` (no shared site) is called next — it creates per-golfer sessions internally.
-4. The next 06:00 fire is scheduled with `setTimeout`.
+## Booking Schedule (schedule.json)
 
-**FR-023 run-immediately logic**: if the process starts after today's `SCHEDULER_HOUR`, it runs immediately rather than waiting until tomorrow. Start logs use `[SCHEDULER]` prefix. A sync failure is caught and logged; the booking engine still runs.
+| Day      | Window       | Players | Slots | Course      |
+|----------|-------------|---------|-------|-------------|
+| Monday   | 12:00-13:00 | 12      | 3     | Pines       |
+| Tuesday  | 12:00-13:00 | 8       | 2     | Pines       |
+| Friday   | 12:00-13:00 | 12      | 3     | Pines       |
+| Saturday | 08:00-13:00 | 12      | 3     | Pines       |
+| Sunday   | 08:00-10:00 | 12      | 3     | alternating |
 
-### Database
+Each slot = 4 players. Tee times spaced ~10 min apart. Falls back to other course and ±1hr/±2hr windows if preferred unavailable. Sunday alternates Pines (even ISO week) / Oaks (odd ISO week).
 
-SQLite via sql.js. Schema in `db.js`. Status values: `pending`, `confirmed`, `failed`, `partial`, `skipped`, `cancelled`. Max 3 retry attempts per slot.
+## Daily Scheduler
 
-`lastSyncAt` is stored in `./data/sync-meta.json` (plain JSON). `db.getLastSyncAt()` / `db.setLastSyncAt(isoString)` are synchronous helpers that read/write that file.
+Pure `setTimeout` loop (not `setInterval`), fires at `SCHEDULER_HOUR:00` local time (default 06:00):
+1. Dedicated `SiteAutomation` session logs in as primary golfer → `runSync(site)` → session closed.
+2. `new BookingEngine()` runs (per-golfer sessions created internally).
+3. Next 06:00 `setTimeout` scheduled.
 
-### Data persistence
+If process starts after today's `SCHEDULER_HOUR`, runs immediately (FR-023).
 
-- Database: `./data/bookings.db`
-- Sync metadata: `./data/sync-meta.json` — `{ "lastSyncAt": "<ISO string>" }`
-- Access log: `./data/access-log.json` — persisted array of external visitor entries (max 500)
-- TLS certs: `./data/certs/cert.pem`, `./data/certs/key.pem`, `./data/certs/account-key.pem`
-- Screenshots: `./screenshots/` (PNG captures at each booking step)
-- Logs: `./golf-scheduler.log` (Winston, 5MB rotation, 3 files)
+## Data & Persistence
 
-### Utility scripts
+| Path | Contents |
+|------|----------|
+| `./data/bookings.db` | SQLite database |
+| `./data/sync-meta.json` | `{ "lastSyncAt": "<ISO>" }` |
+| `./data/access-log.json` | External visitor log (max 500) |
+| `./data/certs/` | TLS cert/key/account-key |
+| `./screenshots/` | PNG captures per booking step |
+| `./golf-scheduler.log` | Winston, 5MB rotation, 3 files |
 
-- **cancel-rebook.js** — One-time script (project root). Logs in as golfer 0, scrapes all site reservations from `FROM_DATE` onward (currently `2026-03-16`), cancels each on the site, then runs `BookingEngine()` to re-book using the alternating golfer rotation. Run with `node cancel-rebook.js`.
-- **cancel-and-rebook.js** — Variant of cancel-rebook.js. Reads confirmed bookings from the DB (filters to real numeric confirmation numbers), cancels them via `site.cancelReservations()`, purges ALL DB rows ≥ `FROM_DATE` (currently `2026-03-16`), then prints instructions to run `npm run init && npm run book`.
-- **fix-confirmations.js** — Loops through all 3 golfer accounts, logs into each, visits their Reservations page, and updates the DB with real confirmation numbers for any confirmed booking still carrying a placeholder (`EXISTING_RESERVATION`, `access`, `CONFIRMED`). Limited by the ~7-day site window. Run with `node fix-confirmations.js`.
-- **delete-slot0.js** — One-time cleanup script that deletes all `slot_index = 0` rows from the database. Uses sql.js directly (no db.js dependency). Run with `node delete-slot0.js`.
-- **reset-failed.js** — Resets over-retried failed slots (`attempts > maxRetries`) back to `pending` (attempts=0) from `2026-03-16` onward. Also resets confirmed rows with `EXISTING_RESERVATION` placeholders. Run with `node reset-failed.js`.
-- **cancel-1player.js** — Logs into all configured golfer accounts, scrapes the reservation history, and cancels any reservation where the site shows only 1 player booked. Updates DB accordingly. Run with `HEADLESS=true node cancel-1player.js`.
-- **get-cert.js** — Obtains a trusted Let's Encrypt certificate via DuckDNS DNS-01 challenge. Requires `DUCKDNS_TOKEN` and `DUCKDNS_DOMAIN` in `.env`. Saves cert to `data/certs/cert.pem` and `data/certs/key.pem`. Re-run every ~60 days to renew before 90-day expiry. Account key cached at `data/certs/account-key.pem`.
+## Utility Scripts (project root, run with `node <script>`)
 
-Note: `sync-reservations.js`, `update-saturdays.js`, and `find-saturdays.js` have been removed from the project root. Their functionality is now provided by `npm run sync` (`src/sync.js`).
+- **cancel-rebook.js** — Cancel all site reservations from `FROM_DATE` then re-book via `BookingEngine`.
+- **cancel-and-rebook.js** — Variant: reads DB confirmed bookings, cancels on site, purges DB rows ≥ `FROM_DATE`, prints instructions to re-init.
+- **fix-confirmations.js** — Loops all 3 golfer accounts, updates DB with real confirmation numbers for placeholder rows.
+- **reset-failed.js** — Resets over-retried failed/placeholder-confirmed slots back to `pending`.
+- **cancel-1player.js** — Cancels any site reservation showing only 1 player booked. (`HEADLESS=true node cancel-1player.js`)
+- **get-cert.js** — Obtains Let's Encrypt cert via DuckDNS DNS-01. Requires `DUCKDNS_TOKEN`/`DUCKDNS_DOMAIN`. Renew every ~60 days.
 
-## Environment variables (.env)
+## Environment Variables (.env)
 
 ```
-GOLF_EMAIL, GOLF_PASSWORD       # Required - primary GolfID credentials
-GOLF_EMAIL2, GOLF_PASSWORD2     # Optional - second golfer account (rotation)
-GOLF_EMAIL3, GOLF_PASSWORD3     # Optional - third golfer account (rotation)
-TIMEZONE                        # Default: America/Chicago
-BOOKING_HORIZON_DAYS           # Default: 30
-FALLBACK_MINUTES               # Default: 30 (max deviation from target time)
-DB_PATH                        # Default: ./data/bookings.db
-SCREENSHOT_DIR                 # Default: ./screenshots
-LOG_LEVEL                      # Default: info
-HEADLESS                       # Default: false. Set to true for daemon/scheduler (no browser window)
-SCHEDULER_HOUR                 # Default: 6. Hour (0-23) for the daily scheduler fire time
-HTTPS_ENABLED                  # Default: false. Set to true to serve HTTPS using data/certs/ files
-DUCKDNS_TOKEN                  # DuckDNS API token — used by get-cert.js for Let's Encrypt DNS challenge
-DUCKDNS_DOMAIN                 # DuckDNS subdomain (without .duckdns.org) — used by get-cert.js
+GOLF_EMAIL, GOLF_PASSWORD        # Required — primary GolfID credentials
+GOLF_EMAIL2, GOLF_PASSWORD2      # Optional — second golfer account
+GOLF_EMAIL3, GOLF_PASSWORD3      # Optional — third golfer account
+TIMEZONE                         # Default: America/Chicago
+BOOKING_HORIZON_DAYS             # Default: 30
+FALLBACK_MINUTES                 # Default: 30
+DB_PATH                          # Default: ./data/bookings.db
+SCREENSHOT_DIR                   # Default: ./screenshots
+LOG_LEVEL                        # Default: info
+HEADLESS                         # Default: false (set true for scheduler daemon)
+SCHEDULER_HOUR                   # Default: 6
+HTTPS_ENABLED                    # Default: false
+DUCKDNS_TOKEN / DUCKDNS_DOMAIN   # Used by get-cert.js only
 ```
 
-## Platform notes
+## Platform Notes
 
-- Runs on Windows (primary). Use Unix shell syntax in Git Bash.
-- sql.js chosen over better-sqlite3 to avoid native build issues on Windows/Node 24.
-- Playwright requires `npx playwright install chromium` after `npm install`.
-- Interactive commands (`book`, `sync`, `cancel`) default to visible browser (`headless: false`).
-- The `scheduler` daemon should be run with `HEADLESS=true` in `.env` to avoid a Chromium window popping up during automated runs.
+- Primary: Windows. Use Unix shell syntax in Git Bash.
+- sql.js chosen over better-sqlite3 (avoids native build issues on Windows/Node 24).
+- Run `npx playwright install chromium` after `npm install`.
+- Run scheduler with `HEADLESS=true` to suppress Chromium window.
 
-## Planning documents
+## Known Open Issues
 
-- **`prd.md`** — Authoritative PRD. Full requirements, schema, module map, edge cases, and implementation delta table (Section 19).
-- **`booking.md`** — Original requirements prompt (primary source for booking rules and schedule format).
-- **`TASKS.md`** — 57 implementation tasks in dependency order across 12 phases. Each task has owner, effort, acceptance criteria, and blocked-by list.
-
-## Known open gaps (from prd.md Section 19)
-
-- **Multi-batch split** (TASK-019, CLOSED): `_bookSlots()` now logs a batch-split breakdown when `slots.length > 3`. Because each slot completes its own checkout cycle, the ≤3-per-transaction constraint is already satisfied in practice. Explicit batch-ceiling enforcement is not needed until a schedule entry exceeds 3 slots.
-- **`verifyBookingOnSite` after checkout** (TASK-020, CLOSED): `_bookSlots()` now calls `verifyBookingOnSite(date, time)` after every successful checkout with a real numeric confirmation number. Slots that fail verification are marked `failed`; caching-delay or unreachable cases skip verification and keep `confirmed`.
-
-## Known bugs and low-severity findings (from TEST_REPORT.md 2026-03-30)
-
-- **`_shiftTime()` midnight underflow** (RESOLVED): Fixed `src/booking.js` to use `((total % 1440) + 1440) % 1440` for correct wrapping.
-- **Cancel endpoint db-singleton race** (RESOLVED): `getAllUpcoming()` in `db.js` now uses a local `freshDb` without touching the singleton.
-- **`index.js` opens browser at port 3000** (RESOLVED): `index.js:42` now opens `http://localhost:3009`.
-- **`isLocalIP('172.')` too broad** (RESOLVED): `isLocalIP()` now correctly matches only RFC 1918 `172.16.0.0/12`.
-- **1-3 player tee time cards booked** (RESOLVED 2026-03-30): `getAvailableTimes()` in `site.js` now pre-filters cards by player capacity — skips any card where the displayed max players < 4, before the booking modal is opened. Belt-and-suspenders: the existing `preferenceOrder = [4]` modal guard is still in place.
-- **Test suite slot-count mismatch** (RESOLVED 2026-03-30): Tests A04/F02/F04/F05 updated to expect 2 slots (Mon/Fri/Sat) matching current `schedule.json`. All 102 tests pass.
-- **Test D09/D10 flakiness** (KNOWN): If a prior test process is killed before the `after()` hook closes the server, the zombie process holds port 3099. Subsequent runs send cancel requests to the stale server, which returns "Already cancelled" from its old DB. Fix: kill any process on port 3099 before running tests (`netstat -ano | grep 3099` then `taskkill /PID <pid> /F`).
-- **Sunday slots spec delta** (P3): `schedule.json` has 4 slots/Sunday (aligned with booking.md spec).
-- **`reconcileDate()` has zero test coverage** (P3): Pure logic in `src/reconcile.js` — high value target for unit tests.
-- **`generate-static.js` called silently** (P3): Invoked after every booking/sync/scheduler run; errors swallowed; not documented in specs.
+- **Test D09/D10 flakiness**: zombie process holds port 3099 if prior test killed before `after()`. Fix: `netstat -ano | grep 3099` then `taskkill /PID <pid> /F`.
+- **`reconcileDate()` zero test coverage** (P3): `src/reconcile.js` — high-value unit test target.
+- **`generate-static.js` errors swallowed** (P3): invoked silently after booking/sync/scheduler runs; not in specs.

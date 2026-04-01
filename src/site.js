@@ -6,6 +6,9 @@ const logger = require('./logger');
 
 const COURSES = config.site.courses;
 
+// Module-level flag: screenshot dir is created at most once per process lifetime.
+let _screenshotDirEnsured = false;
+
 class SiteAutomation {
   constructor({ email, password } = {}) {
     this.email = email || config.email;
@@ -38,7 +41,10 @@ class SiteAutomation {
 
   async screenshot(name) {
     const dir = config.screenshotDir;
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!_screenshotDirEnsured) {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      _screenshotDirEnsured = true;
+    }
     const filePath = path.join(dir, `${name}-${Date.now()}.png`);
     await this.page.screenshot({ path: filePath, fullPage: true });
     logger.debug(`Screenshot saved: ${filePath}`);
@@ -807,7 +813,7 @@ class SiteAutomation {
         }
 
         if (!golferSection) {
-          return { error: 'Could not find "Select Number of Golfers" heading', selectedCount: 1 };
+          return { error: 'Could not find "Select Number of Golfers" heading', selectedCount: 0 };
         }
 
         // From the heading, walk UP to find the container with golfer count controls.
@@ -887,8 +893,36 @@ class SiteAutomation {
         const preferenceOrder = [4];
         for (const count of preferenceOrder) {
           if (golferBtns[count] && !golferBtns[count].disabled) {
-            golferBtns[count].el.click();
-            return { selectedCount: count, found: Object.keys(golferBtns).map(Number) };
+            const btn = golferBtns[count].el;
+
+            // Dispatch a properly bubbling click so React's top-level event
+            // delegation (React 17+ root delegation) catches it.  A raw
+            // el.click() does NOT bubble through React's synthetic event
+            // system for MUI RadioGroup — the actual state update is driven
+            // by the <input type="radio"> onChange event inside the button.
+            const fireReactClick = (target) => {
+              // Try to find a child <input type="radio"> — that is what React
+              // listens to via onChange on the RadioGroup.
+              const radioInput = target.querySelector('input[type="radio"]') ||
+                (target.tagName === 'INPUT' && target.type === 'radio' ? target : null);
+              if (radioInput) {
+                // Simulate user interaction: focus → mousedown → mouseup → click → change
+                radioInput.focus();
+                radioInput.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+                radioInput.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+                radioInput.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                radioInput.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
+                return true;
+              }
+              // No child radio input — fire on the button itself with bubbling
+              target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+              target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+              target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              return false;
+            };
+
+            const usedRadioInput = fireReactClick(btn);
+            return { selectedCount: count, found: Object.keys(golferBtns).map(Number), usedRadioInput };
           }
         }
         // Nothing available
@@ -922,10 +956,89 @@ class SiteAutomation {
         };
       }
 
-      logger.info(`Selected ${golferResult.selectedCount} golfers in modal (buttons found: ${golferResult.found})`);
+      logger.info(`Selected ${golferResult.selectedCount} golfers in modal (buttons found: ${golferResult.found}, usedRadioInput: ${golferResult.usedRadioInput})`);
 
       // Wait for React to process the golfer selection
       await this.page.waitForTimeout(1500);
+
+      // Verify the selection actually registered — read back the checked state.
+      // MUI RadioGroup marks the selected radio input as checked. If the state
+      // didn't update (React ignored the event), retry using Playwright's native
+      // click which synthesizes full pointer events and works even when React
+      // event delegation misses the in-page dispatchEvent call.
+      const verifyResult = await this.page.evaluate(() => {
+        const allEls = document.querySelectorAll('*');
+        let golferSection = null;
+        for (const el of allEls) {
+          const ownText = Array.from(el.childNodes)
+            .filter(n => n.nodeType === Node.TEXT_NODE)
+            .map(n => n.textContent.trim())
+            .join(' ');
+          if (/Select Number of Golfers/i.test(ownText)) { golferSection = el; break; }
+          if (el.children.length === 0 && /Select Number of Golfers/i.test(el.textContent.trim())) { golferSection = el; break; }
+        }
+        if (!golferSection) return { verified: false, reason: 'heading not found' };
+        let container = golferSection.parentElement;
+        for (let depth = 0; depth < 6 && container; depth++, container = container.parentElement) {
+          const radioGroup = container.querySelector('[role="radiogroup"]');
+          if (radioGroup) {
+            const checkedInput = radioGroup.querySelector('input[type="radio"]:checked');
+            if (checkedInput) {
+              // Read the value or sibling label text to determine which count is selected
+              const val = parseInt(checkedInput.value, 10);
+              const labelText = checkedInput.closest('label') ?
+                checkedInput.closest('label').textContent.trim() : null;
+              return { verified: true, selectedValue: val || null, labelText };
+            }
+            // Also check aria-checked on MUI radio spans
+            const ariaChecked = radioGroup.querySelector('[aria-checked="true"]');
+            if (ariaChecked) {
+              const text = ariaChecked.textContent.trim();
+              const val = parseInt(text, 10);
+              return { verified: true, selectedValue: val || null, ariaChecked: text };
+            }
+            return { verified: false, reason: 'no checked radio found in radiogroup' };
+          }
+        }
+        return { verified: false, reason: 'radiogroup not found' };
+      });
+
+      logger.info(`Player count verification: ${JSON.stringify(verifyResult)}`);
+
+      // If React state did not update, try Playwright's native click on the 4-player option.
+      if (!verifyResult.verified || verifyResult.selectedValue !== 4) {
+        logger.warn(`Player count not confirmed as 4 after in-page dispatchEvent — retrying with Playwright native click`);
+        try {
+          // Use Playwright locator to find and click the radio input for "4"
+          // Try to find by value attribute or label text
+          let clicked = false;
+          const radioInputs = await this.page.locator('[role="radiogroup"] input[type="radio"]').all();
+          for (const inp of radioInputs) {
+            const val = await inp.getAttribute('value').catch(() => null);
+            const labelEl = await inp.evaluate(el => {
+              const label = el.closest('label');
+              return label ? label.textContent.trim() : (el.parentElement ? el.parentElement.textContent.trim() : '');
+            });
+            const num = parseInt(val || labelEl, 10);
+            if (num === 4) {
+              await inp.click({ force: true });
+              logger.info('Playwright native click on 4-player radio input succeeded');
+              clicked = true;
+              break;
+            }
+          }
+          if (!clicked) {
+            // Fallback: find any element in radiogroup whose visible text is "4" and click it
+            const fourLocator = this.page.locator('[role="radiogroup"]').locator('text="4"').first();
+            await fourLocator.click({ force: true });
+            logger.info('Playwright native click on "4" text within radiogroup succeeded');
+          }
+          await this.page.waitForTimeout(1000);
+        } catch (retryErr) {
+          logger.warn(`Playwright native click retry failed: ${retryErr.message}`);
+        }
+      }
+
       await this.screenshot(`slot-${slotIndex}-players-set`);
 
       // Step 2: Click "ADD TO CART" button
@@ -936,7 +1049,9 @@ class SiteAutomation {
           if (btn.offsetParent === null) continue; // skip hidden
           const text = btn.textContent.trim().replace(/[\s\u200b]+/g, ' ').toUpperCase();
           if (text === 'ADD TO CART') {
-            btn.click();
+            // Use a bubbling MouseEvent so React's synthetic event system
+            // processes the click (matches how a real user interaction fires).
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             return { found: true, text: btn.textContent.trim() };
           }
         }
@@ -2198,16 +2313,26 @@ class SiteAutomation {
         const cancelUrl = `${config.site.memberUrl}/reservation/history/${resNum}/cancel`;
         logger.info(`Navigating to: ${cancelUrl}`);
         await this.page.goto(cancelUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await this.page.waitForTimeout(3000);
+        // Wait longer for the SPA to render — far-future reservations can be slower
+        await this.page.waitForTimeout(5000);
         await this.screenshot(`cancel-page-${i}`);
 
-        // Verify we're on the cancellation page
-        const pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 3000));
-        if (!/cancellation request/i.test(pageText)) {
-          logger.warn(`Cancel page did not load for ${label}. Text: ${pageText.slice(0, 200)}`);
-          results.failed++;
-          results.details.push({ resNum, time, course: booking.course, success: false, error: 'Cancel page did not load' });
-          continue;
+        // Verify we're on the cancellation page.
+        // The site uses several headings: "Cancellation Request", "Cancel Reservation",
+        // "Cancel Booking", "Cancel Tee Time". Match any of these variants.
+        const cancelPagePattern = /cancell?ation\s*request|cancel\s+(reservation|booking|tee\s+time)/i;
+        let pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 3000));
+        if (!cancelPagePattern.test(pageText)) {
+          // Try waiting a bit more — the SPA may still be loading
+          await this.page.waitForTimeout(4000);
+          pageText = await this.page.evaluate(() => document.body.innerText.slice(0, 3000));
+          if (!cancelPagePattern.test(pageText)) {
+            logger.warn(`Cancel page did not load for ${label}. Text: ${pageText.slice(0, 300)}`);
+            results.failed++;
+            results.details.push({ resNum, time, course: booking.course, success: false, error: 'Cancel page did not load' });
+            continue;
+          }
+          logger.info(`Cancel page loaded after extra wait for ${label}`);
         }
 
         // Select number of players to cancel (first MUI dropdown — pick highest)
@@ -2359,7 +2484,22 @@ class SiteAutomation {
       if (/pines/i.test(body)) course = 'Pines';
       else if (/oaks/i.test(body)) course = 'Oaks';
 
-      return { date: dateStr, time: time24, course, confirmationNumber };
+      // Extract player count from the detail page body.
+      // TeeItUp shows "GOLFERS  N" on the detail page.
+      let players = null;
+      const playerPatterns = [
+        /\bGOLFERS\s+(\d+)\b/,
+        /(\d+)\s*(?:player|golfer|person|spot)s?\b/i,
+        /\b(\d+)\s*x\s*(?:player|golfer)/i,
+        /qty[:\s]+(\d+)/i,
+        /quantity[:\s]+(\d+)/i,
+      ];
+      for (const re of playerPatterns) {
+        const m = body.match(re);
+        if (m) { players = parseInt(m[1], 10); break; }
+      }
+
+      return { date: dateStr, time: time24, course, confirmationNumber, players };
     }, fallbackId);
   }
 

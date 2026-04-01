@@ -143,6 +143,19 @@ async function reconcileDate(date, siteSlots, dbSlots, logger) {
 
     const site = sortedSite[i];
 
+    // Rule 0: Warn if the site reservation has fewer than 4 players.
+    // This indicates a bad booking that should be cancelled and rebooked.
+    // We do not auto-cancel here — the operator should run cancel-1player.js.
+    const sitePlayers = typeof site.players === 'number' ? site.players : null;
+    if (sitePlayers !== null && sitePlayers < 4) {
+      const warning =
+        `[SYNC] WARN: date=${date} slot_index=${slot.slot_index} (${slot.actual_time || slot.target_time}): ` +
+        `site reservation Res#${site.confirmationNumber} shows only ${sitePlayers} player(s) — ` +
+        `expected 4. Run cancel-1player.js to fix.`;
+      logger.warn(warning);
+      warnings.push(warning);
+    }
+
     // Determine whether an update is needed.
     //
     // Rule 1: actual_time differs from site time.
