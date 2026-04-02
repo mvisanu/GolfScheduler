@@ -1304,7 +1304,7 @@ app.get('/', async (req, res) => {
         chip.classList.add('chip-' + newStatus);
 
         // Update chip text
-        chip.textContent = displayTime + ' ' + course;
+        chip.textContent = displayTime + ' ' + course + ' · ' + (b.players || 4) + 'p';
 
         // Update dataset
         chip.dataset.status = newStatus;

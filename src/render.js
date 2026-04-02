@@ -34,7 +34,7 @@ function buildChipHTML(b, dateStr) {
       data-confirmation="${b.confirmation_number || ''}"
       data-target-time="${b.target_time}" data-actual-time="${b.actual_time || ''}"
       data-players="${b.players || 4}" data-golfer="${gi}"
-      title="${b.day_label} — ${course} — G${gi + 1}${resNum}">${displayTime} ${course}</div>`;
+      title="${b.day_label} — ${course} — G${gi + 1}${resNum}">${displayTime} ${course} · ${b.players || 4}p</div>`;
 }
 
 function generateCalendarHTML(year, month, byDate, buttonLabel = 'Schedule Month', isAdmin = false) {
